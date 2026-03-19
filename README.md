@@ -52,32 +52,34 @@
 4. Find **EcoEdge AI Thermostat** in the HACS integration list and click **Download**
 5. Restart Home Assistant
 
-### Option B — Manual
+### Option B — Manual (VS Code terminal on Home Assistant)
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/ecoedge-dev/ha_ecoedge_ai_thermostat.git
-   ```
-2. Copy the `custom_components/ha_ecoedge_ai_thermostat` folder from the cloned repo into your Home Assistant config:
-   ```bash
-   cp -r ha_ecoedge_ai_thermostat/custom_components/ha_ecoedge_ai_thermostat /config/custom_components/
-   ```
-   The result should look like this:
-   ```
-   config/
-   └── custom_components/
-       └── ha_ecoedge_ai_thermostat/
-           ├── __init__.py
-           ├── config_flow.py
-           ├── config_schema.py
-           ├── const.py
-           ├── manifest.json
-           ├── strings.json
-           └── translations/
-               └── en.json
-   ```
-   > The folder must be named `ha_ecoedge_ai_thermostat` — this is the integration domain that Home Assistant uses to identify it. Do not rename it.
-3. Restart Home Assistant
+Open the VS Code terminal in Home Assistant and run:
+
+```bash
+cd /config
+git clone https://github.com/ecoedge-dev/ha_ecoedge_ai_thermostat.git
+mkdir -p custom_components
+mv ./ha_ecoedge_ai_thermostat custom_components/
+```
+
+The result will look like this:
+
+```
+/config/
+└── custom_components/
+    └── ha_ecoedge_ai_thermostat/
+        ├── __init__.py
+        ├── config_flow.py
+        ├── config_schema.py
+        ├── const.py
+        ├── manifest.json
+        ├── strings.json
+        └── translations/
+            └── en.json
+```
+
+Restart Home Assistant when done.
 
 ---
 
