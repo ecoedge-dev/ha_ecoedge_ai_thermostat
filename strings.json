@@ -1,0 +1,55 @@
+{
+  "config": {
+    "title": "EcoEdge AI Thermostat",
+    "step": {
+      "user": {
+        "title": "Connect to EcoEdge",
+        "description": "Sign in with your EcoEdge account to enable AI-powered predictive heating control. The receiver endpoint is determined automatically.",
+        "data": {
+          "email": "Account email",
+          "password": "Account password",
+          "home_id": "Home ID (optional)",
+          "include_entities": "Select Thermostats",
+          "outdoor_sensor": "Outdoor temperature sensor",
+          "debounce_seconds": "Debounce (seconds)"
+        }
+      }
+    },
+    "error": {
+      "invalid_config": "Invalid configuration; please verify your input and try again.",
+      "cannot_connect": "Cannot reach the EcoEdge service. Check your internet connection.",
+      "invalid_auth": "Invalid email or password.",
+      "auth_request_failed": "Authentication failed. Please try again or contact info@ecoedge.io.",
+      "password_required": "Password is required."
+    }
+  },
+  "options": {
+    "step": {
+      "user": {
+        "title": "EcoEdge AI Thermostat settings",
+        "description": "Update your thermostat selection or rotate the access token. Provide your password only if you want to issue a new token.",
+        "data": {
+          "email": "Account email",
+          "password": "Account password (required to rotate token)",
+          "home_id": "Home ID",
+          "include_entities": "Select Thermostats",
+          "exclude_entities": "Exclude entities",
+          "outdoor_sensor": "Outdoor temperature sensor",
+          "debounce_seconds": "Debounce (seconds)",
+          "rotate_token": "Rotate access token"
+        }
+      }
+    },
+    "error": {
+      "invalid_config": "Invalid configuration; please verify your input and try again.",
+      "cannot_connect": "Cannot reach the EcoEdge service. Check your internet connection.",
+      "invalid_auth": "Invalid email or password.",
+      "auth_request_failed": "Authentication failed. Please try again or contact info@ecoedge.io.",
+      "password_required": "Password is required."
+    }
+  },
+  "abort": {
+    "unknown_entry": "Configuration entry could not be found.",
+    "reconfigure_successful": "Settings updated successfully. The integration is reloading to apply your changes."
+  }
+}
