@@ -24,7 +24,7 @@
 - **Thermal learning** — adapts to your home's insulation, size, and heating system
 - **Weather-aware** — uses real forecasts (temperature, wind, precipitation)
 - **Multi-thermostat** — select which thermostats to include
-- **Outdoor sensor support** — use a local sensor for higher accuracy
+- **Outdoor sensor support** — required for thermal modeling; use a local sensor for highest accuracy
 - **Secure** — all data is sent over encrypted HTTPS to the EcoEdge API (`ha.ecoedge.io`)
 - **Token refresh** — access tokens renew automatically, no re-authentication needed
 
@@ -89,7 +89,7 @@ Restart Home Assistant when done.
 2. Search for **EcoEdge AI Thermostat**
 3. Enter your EcoEdge account email and password
 4. Select the thermostats you want to optimize
-5. Optionally select an outdoor temperature sensor for better accuracy
+5. Select an outdoor temperature sensor — **required** for thermal modeling
 6. Click **Submit** — the integration connects and starts learning immediately
 
 > Your receiver endpoint is configured automatically. No manual URL entry needed.
@@ -104,7 +104,7 @@ After setup you can adjust settings via **Settings → Devices & Services → Ec
 |---|---|
 | **Select Thermostats** | Add or remove thermostats from optimization |
 | **Exclude entities** | Entities to always ignore |
-| **Outdoor temperature sensor** | Local sensor to improve forecast accuracy |
+| **Outdoor temperature sensor** | Required for thermal modeling — use a local sensor for highest accuracy |
 | **Debounce (seconds)** | How long to wait before batching state changes (default: 3s) |
 | **Rotate access token** | Issue a new token — enter your password to confirm |
 
@@ -123,7 +123,7 @@ ha_ecoedge_ai_thermostat:
   include_entities:
     - climate.living_room
     - climate.bedroom
-  outdoor_sensor: sensor.outdoor_temperature   # optional
+  outdoor_sensor: sensor.outdoor_temperature   # required for thermal modeling
   debounce_seconds: 3
 ```
 
