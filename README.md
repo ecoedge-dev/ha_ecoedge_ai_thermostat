@@ -60,7 +60,8 @@ Open the VS Code terminal in Home Assistant and run:
 cd /config
 git clone https://github.com/ecoedge-dev/ha_ecoedge_ai_thermostat.git
 mkdir -p custom_components
-mv ./ha_ecoedge_ai_thermostat custom_components/
+cp -r ha_ecoedge_ai_thermostat/custom_components/ha_ecoedge_ai_thermostat custom_components/
+rm -rf ha_ecoedge_ai_thermostat
 ```
 
 The result will look like this:
