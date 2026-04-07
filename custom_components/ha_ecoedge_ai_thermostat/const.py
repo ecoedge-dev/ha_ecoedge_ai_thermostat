@@ -17,6 +17,7 @@ CONF_REFRESH_TOKEN = "refresh_token"
 
 AUTH_LOGIN_URL = "https://ha.ecoedge.io/api/auth/login"
 AUTH_REFRESH_URL = "https://ha.ecoedge.io/api/auth/refresh"
+GRAPHQL_URL = "https://ha.ecoedge.io/graphql/"
 
 # Internal defaults — not exposed in the UI
 DEFAULT_DEBOUNCE_SECONDS = 3

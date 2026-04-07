@@ -13,7 +13,7 @@ import aiohttp
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import DEFAULT_FETCH_DELAY_SECONDS, DEFAULT_FALLBACK_POLL_MINUTES
+from .const import DEFAULT_FETCH_DELAY_SECONDS, DEFAULT_FALLBACK_POLL_MINUTES, GRAPHQL_URL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,14 +50,12 @@ class ProfileFetcher:
     def __init__(
         self,
         hass: HomeAssistant,
-        endpoint: str,
         api_key: str,
         home_id: str,
         session: aiohttp.ClientSession,
         fetch_delay: int = DEFAULT_FETCH_DELAY_SECONDS,
     ) -> None:
         self._hass = hass
-        self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
         self._home_id = home_id
         self._session = session
@@ -123,7 +121,7 @@ class ProfileFetcher:
         await self._do_fetch()
 
     async def _do_fetch(self) -> None:
-        url = f"{self._endpoint}/graphql/"
+        url = GRAPHQL_URL
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",

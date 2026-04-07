@@ -253,7 +253,6 @@ class HaAiPushRuntime:
 
         fetcher = ProfileFetcher(
             hass=self.hass,
-            endpoint=endpoint,
             api_key=api_key or "",
             home_id=home_id or self.hass.config.location_name,
             session=aiohttp_client.async_get_clientsession(self.hass),
