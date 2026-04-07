@@ -131,7 +131,7 @@ class AiSetpointSensor(_EcoEdgeSensor):
             return None
         if p.get("mlBlendActive") and p.get("mlBlendedSetpoint") is not None:
             return round(float(p["mlBlendedSetpoint"]), 1)
-        sp = p.get("aiSetpoint")
+        sp = p.get("decisionSafeSetpoint")
         return round(float(sp), 1) if sp is not None else None
 
     @property
@@ -157,7 +157,7 @@ class ModelSensor(_EcoEdgeSensor):
         p = self._profile
         if not p:
             return None
-        model = p.get("modelUsed") or "—"
+        model = p.get("predictionModel") or "—"
         if p.get("mlBlendActive"):
             return f"✦ ML ({model})"
         return model
@@ -197,7 +197,7 @@ class ConfidenceSensor(_EcoEdgeSensor):
         p = self._profile
         if not p:
             return None
-        c = p.get("confidence")
+        c = p.get("rcConfidence")
         if c is None:
             return None
         return round(float(c) * 100, 1)

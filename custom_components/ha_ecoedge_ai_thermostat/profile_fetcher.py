@@ -18,13 +18,13 @@ from .const import DEFAULT_FETCH_DELAY_SECONDS, DEFAULT_FALLBACK_POLL_MINUTES
 _LOGGER = logging.getLogger(__name__)
 
 _GRAPHQL_QUERY = """
-{
-  currentProfiles {
+query Profiles($homeId: String!) {
+  currentProfiles(homeId: $homeId) {
     entityId
-    aiSetpoint
-    modelUsed
+    predictionModel
+    decisionSafeSetpoint
     rcKPerHour
-    confidence
+    rcConfidence
     savingsPct7d
     mlBlendActive
     mlBlendedSetpoint
@@ -52,12 +52,14 @@ class ProfileFetcher:
         hass: HomeAssistant,
         endpoint: str,
         api_key: str,
+        home_id: str,
         session: aiohttp.ClientSession,
         fetch_delay: int = DEFAULT_FETCH_DELAY_SECONDS,
     ) -> None:
         self._hass = hass
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
+        self._home_id = home_id
         self._session = session
         self._fetch_delay = fetch_delay
         self._fetch_task: Optional[asyncio.Task] = None
@@ -129,7 +131,7 @@ class ProfileFetcher:
         try:
             async with self._session.post(
                 url,
-                json={"query": _GRAPHQL_QUERY},
+                json={"query": _GRAPHQL_QUERY, "variables": {"homeId": self._home_id}},
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
