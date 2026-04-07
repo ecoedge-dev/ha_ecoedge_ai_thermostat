@@ -345,7 +345,3 @@ class HaAiPushRuntime:
             self._initial_task = None
 
 
-async def async_get_options_flow(config_entry: ConfigEntry):
-    from .config_flow import HaAiPushOptionsFlowHandler
-
-    return HaAiPushOptionsFlowHandler(config_entry)

@@ -48,6 +48,29 @@
       "password_required": "Password is required."
     }
   },
+  "reconfigure": {
+    "step": {
+      "user": {
+        "title": "Reconfigure EcoEdge AI Thermostat",
+        "description": "Re-authenticate with your EcoEdge account to update credentials.",
+        "data": {
+          "email": "Account email",
+          "password": "Account password",
+          "home_id": "Home ID (optional)",
+          "include_entities": "Select Thermostats",
+          "outdoor_sensor": "Outdoor temperature sensor",
+          "debounce_seconds": "Debounce (seconds)"
+        }
+      }
+    },
+    "error": {
+      "invalid_config": "Invalid configuration; please verify your input and try again.",
+      "cannot_connect": "Cannot reach the EcoEdge service. Check your internet connection.",
+      "invalid_auth": "Invalid email or password.",
+      "auth_request_failed": "Authentication failed. Please try again or contact info@ecoedge.io.",
+      "password_required": "Password is required."
+    }
+  },
   "abort": {
     "unknown_entry": "Configuration entry could not be found.",
     "reconfigure_successful": "Settings updated successfully. The integration is reloading to apply your changes."

@@ -7,6 +7,7 @@ from aiohttp import ClientError, ClientTimeout
 
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import aiohttp_client
@@ -283,6 +284,11 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         self._reconfigure_entry: ConfigEntry | None = None
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> "HaAiPushOptionsFlowHandler":
+        return HaAiPushOptionsFlowHandler(config_entry)
 
     async def async_step_user(
         self, user_input: Dict[str, Any] | None = None
