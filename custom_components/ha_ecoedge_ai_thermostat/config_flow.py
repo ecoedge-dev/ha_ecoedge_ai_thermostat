@@ -288,7 +288,7 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> "HaAiPushOptionsFlowHandler":
-        return HaAiPushOptionsFlowHandler(config_entry)
+        return HaAiPushOptionsFlowHandler()
 
     async def async_step_user(
         self, user_input: Dict[str, Any] | None = None
@@ -414,9 +414,6 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class HaAiPushOptionsFlowHandler(config_entries.OptionsFlow):
-    def __init__(self, entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = entry
-
     async def async_step_init(
         self, user_input: Dict[str, Any] | None = None
     ) -> FlowResult:
