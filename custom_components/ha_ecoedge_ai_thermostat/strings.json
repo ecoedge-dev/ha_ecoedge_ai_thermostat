@@ -74,5 +74,14 @@
   "abort": {
     "unknown_entry": "Configuration entry could not be found.",
     "reconfigure_successful": "Settings updated successfully. The integration is reloading to apply your changes."
+  },
+  "entity": {
+    "sensor": {
+      "ai_setpoint": {"name": "AI Setpoint"},
+      "model": {"name": "Model"},
+      "k_per_hour": {"name": "Heat Loss k/h"},
+      "confidence": {"name": "Confidence"},
+      "saving_est_7d": {"name": "Saving Est. 7d"}
+    }
   }
 }

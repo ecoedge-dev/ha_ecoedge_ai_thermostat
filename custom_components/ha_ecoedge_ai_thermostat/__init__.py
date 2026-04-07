@@ -33,7 +33,9 @@ from .const import (
     DEFAULT_RETRY_ATTEMPTS,
     DEFAULT_RETRY_BACKOFF,
     DEFAULT_REFRESH_TIMEOUT_SECONDS,
+    DEFAULT_FETCH_DELAY_SECONDS,
 )
+from .profile_fetcher import ProfileFetcher
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -170,14 +172,17 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtime = HaAiPushRuntime(hass, entry)
     await runtime.async_setup()
-    hass.data[DOMAIN][entry.entry_id] = runtime
+    hass.data[DOMAIN][entry.entry_id] = {"runtime": runtime, "fetcher": runtime.fetcher}
+    await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    runtime: "HaAiPushRuntime" | None = hass.data[DOMAIN].pop(entry.entry_id, None)
-    if runtime:
+    await hass.config_entries.async_unload_platforms(entry, ["sensor"])
+    entry_data = hass.data[DOMAIN].pop(entry.entry_id, None)
+    if entry_data:
+        runtime: "HaAiPushRuntime" = entry_data["runtime"]
         await runtime.async_unload()
     return True
 
@@ -225,6 +230,7 @@ class HaAiPushRuntime:
         self._unsub: Optional[Callable[[], None]] = None
         self._queue: Optional[DebouncedQueue] = None
         self._initial_task: Optional[asyncio.Task] = None
+        self.fetcher: Optional[ProfileFetcher] = None
 
     async def async_setup(self) -> None:
         conf = {**self.entry.data, **self.entry.options}
@@ -244,6 +250,16 @@ class HaAiPushRuntime:
         client = PushClient(self.hass, endpoint, api_key, refresh_token, client_id, timeout_seconds)
         queue = DebouncedQueue(debounce_seconds)
         self._queue = queue
+
+        fetcher = ProfileFetcher(
+            hass=self.hass,
+            endpoint=endpoint,
+            api_key=api_key or "",
+            session=aiohttp_client.async_get_clientsession(self.hass),
+            fetch_delay=DEFAULT_FETCH_DELAY_SECONDS,
+        )
+        self.fetcher = fetcher
+        await fetcher.async_setup()
 
         async def flush(entity_ids: List[str]) -> None:
             items = []
@@ -274,6 +290,7 @@ class HaAiPushRuntime:
                     _LOGGER.debug(
                         "Pushed %s climate states to %s", len(items), client.endpoint
                     )
+                    fetcher.schedule_fetch_after_push()
                     return
                 except TokenExpiredError:
                     _LOGGER.debug("Access token expired, attempting refresh")
@@ -281,9 +298,11 @@ class HaAiPushRuntime:
                     if new_token:
                         new_data = {**self.entry.data, CONF_API_KEY: new_token}
                         self.hass.config_entries.async_update_entry(self.entry, data=new_data)
+                        fetcher.update_token(new_token)
                         try:
                             await client.post(payload)
                             _LOGGER.debug("Pushed %s states after token refresh", len(items))
+                            fetcher.schedule_fetch_after_push()
                         except Exception as e2:
                             _LOGGER.warning("Push failed after token refresh: %s", e2)
                     else:
@@ -343,5 +362,8 @@ class HaAiPushRuntime:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._initial_task
             self._initial_task = None
+        if self.fetcher:
+            await self.fetcher.async_unload()
+            self.fetcher = None
 
 
