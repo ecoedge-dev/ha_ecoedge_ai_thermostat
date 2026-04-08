@@ -264,7 +264,7 @@ class HaAiPushRuntime:
 
         # Sync entity lists to backend on startup (background, non-blocking).
         self.hass.async_create_background_task(
-            self._sync_entities_to_backend(api_key, include, outdoor_sensor),
+            self._sync_entities_to_backend(endpoint, api_key, include, outdoor_sensor),
             "ecoedge_entity_sync",
         )
 
@@ -358,22 +358,23 @@ class HaAiPushRuntime:
         )
 
     async def _sync_entities_to_backend(
-        self, api_key: str, thermostats: list, outdoor_sensor: Optional[str]
+        self, endpoint: str, api_key: str, thermostats: list, outdoor_sensor: Optional[str]
     ) -> None:
         """Sync entity lists to backend. Non-fatal on failure."""
         if not api_key:
             return
         outdoor_sensors = [outdoor_sensor] if outdoor_sensor else []
+        sync_url = f"{endpoint.rstrip('/')}/api/device/sync-entities" if endpoint else SYNC_ENTITIES_URL
         session = aiohttp_client.async_get_clientsession(self.hass)
         try:
             async with session.post(
-                SYNC_ENTITIES_URL,
+                sync_url,
                 json={"thermostats": thermostats, "outdoor_sensors": outdoor_sensors},
                 headers={"Authorization": f"Bearer {api_key}"},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status >= 400:
-                    _LOGGER.debug("Startup entity sync: HTTP %s", resp.status)
+                    _LOGGER.warning("Startup entity sync: HTTP %s from %s", resp.status, sync_url)
                 else:
                     _LOGGER.debug("Startup entity sync OK")
         except Exception as err:

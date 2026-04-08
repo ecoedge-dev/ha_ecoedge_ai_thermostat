@@ -249,20 +249,23 @@ async def _async_sync_entities(flow, data: Dict[str, Any]) -> None:
     thermostats = _ensure_list(data.get(CONF_INCLUDE))
     outdoor_sensor = data.get(CONF_OUTDOOR_SENSOR)
     outdoor_sensors = [outdoor_sensor] if outdoor_sensor else []
+    # Build URL from the configured endpoint so it works with any deployment
+    endpoint = (data.get(CONF_ENDPOINT) or "").rstrip("/")
+    sync_url = f"{endpoint}/api/device/sync-entities" if endpoint else SYNC_ENTITIES_URL
     session = aiohttp_client.async_get_clientsession(flow.hass)
     try:
         async with session.post(
-            SYNC_ENTITIES_URL,
+            sync_url,
             json={"thermostats": thermostats, "outdoor_sensors": outdoor_sensors},
             headers={"Authorization": f"Bearer {token}"},
             timeout=ClientTimeout(total=DEFAULT_TIMEOUT_SECONDS),
         ) as resp:
             if resp.status >= 400:
-                _LOGGER.debug("Entity sync returned %s", resp.status)
+                _LOGGER.warning("Entity sync returned HTTP %s from %s", resp.status, sync_url)
             else:
                 _LOGGER.debug("Entity sync OK: %s", await resp.text())
     except Exception as err:
-        _LOGGER.debug("Entity sync failed (non-fatal): %s", err)
+        _LOGGER.warning("Entity sync failed (non-fatal): %s", err)
 
 
 async def _async_login(flow, data: Dict[str, Any], password: str) -> Dict[str, Any]:
