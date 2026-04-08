@@ -29,6 +29,7 @@ from .const import (
     CONF_REFRESH_TOKEN,
     CONF_TIMEOUT_SECONDS,
     AUTH_LOGIN_URL,
+    SYNC_ENTITIES_URL,
     DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
     DOMAIN,
@@ -240,6 +241,30 @@ async def _async_update_device(flow, data: Dict[str, Any]) -> None:
         _LOGGER.debug("Device update failed (non-fatal): %s", err)
 
 
+async def _async_sync_entities(flow, data: Dict[str, Any]) -> None:
+    """Sync thermostat and outdoor sensor lists to the backend."""
+    token = data.get(CONF_API_KEY)
+    if not token:
+        return
+    thermostats = _ensure_list(data.get(CONF_INCLUDE))
+    outdoor_sensor = data.get(CONF_OUTDOOR_SENSOR)
+    outdoor_sensors = [outdoor_sensor] if outdoor_sensor else []
+    session = aiohttp_client.async_get_clientsession(flow.hass)
+    try:
+        async with session.post(
+            SYNC_ENTITIES_URL,
+            json={"thermostats": thermostats, "outdoor_sensors": outdoor_sensors},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=ClientTimeout(total=DEFAULT_TIMEOUT_SECONDS),
+        ) as resp:
+            if resp.status >= 400:
+                _LOGGER.debug("Entity sync returned %s", resp.status)
+            else:
+                _LOGGER.debug("Entity sync OK: %s", await resp.text())
+    except Exception as err:
+        _LOGGER.debug("Entity sync failed (non-fatal): %s", err)
+
+
 async def _async_login(flow, data: Dict[str, Any], password: str) -> Dict[str, Any]:
     url = AUTH_LOGIN_URL
     payload = {
@@ -345,6 +370,7 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             self.hass.config_entries.async_update_entry(
                                 self._reconfigure_entry, data=data
                             )
+                            await _async_sync_entities(self, data)
                             await self.hass.config_entries.async_reload(
                                 self._reconfigure_entry.entry_id
                             )
@@ -470,6 +496,7 @@ class HaAiPushOptionsFlowHandler(config_entries.OptionsFlow):
                         self.hass.config_entries.async_update_entry(
                             self.config_entry, data=data
                         )
+                        await _async_sync_entities(self, data)
                         return self.async_create_entry(data={})
 
         form_values = (

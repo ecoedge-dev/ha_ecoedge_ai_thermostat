@@ -28,6 +28,7 @@ from .const import (
     CONF_CLIENT_ID,
     CONF_REFRESH_TOKEN,
     AUTH_REFRESH_URL,
+    SYNC_ENTITIES_URL,
     DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
     DEFAULT_RETRY_ATTEMPTS,
@@ -261,6 +262,12 @@ class HaAiPushRuntime:
         self.fetcher = fetcher
         await fetcher.async_setup()
 
+        # Sync entity lists to backend on startup (background, non-blocking).
+        self.hass.async_create_background_task(
+            self._sync_entities_to_backend(api_key, include, outdoor_sensor),
+            "ecoedge_entity_sync",
+        )
+
         async def flush(entity_ids: List[str]) -> None:
             items = []
             for eid in entity_ids:
@@ -349,6 +356,28 @@ class HaAiPushRuntime:
             include,
             exclude,
         )
+
+    async def _sync_entities_to_backend(
+        self, api_key: str, thermostats: list, outdoor_sensor: Optional[str]
+    ) -> None:
+        """Sync entity lists to backend. Non-fatal on failure."""
+        if not api_key:
+            return
+        outdoor_sensors = [outdoor_sensor] if outdoor_sensor else []
+        session = aiohttp_client.async_get_clientsession(self.hass)
+        try:
+            async with session.post(
+                SYNC_ENTITIES_URL,
+                json={"thermostats": thermostats, "outdoor_sensors": outdoor_sensors},
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status >= 400:
+                    _LOGGER.debug("Startup entity sync: HTTP %s", resp.status)
+                else:
+                    _LOGGER.debug("Startup entity sync OK")
+        except Exception as err:
+            _LOGGER.debug("Startup entity sync failed (non-fatal): %s", err)
 
     async def async_unload(self) -> None:
         if self._unsub:
