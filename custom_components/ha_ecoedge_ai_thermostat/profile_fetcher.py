@@ -84,14 +84,14 @@ class ProfileFetcher:
         self._fetch_task = self._hass.async_create_task(self._delayed_fetch())
 
     async def async_setup(self) -> None:
-        """Register the 30-minute fallback poll and do an immediate first fetch."""
+        """Register the 30-minute fallback poll and schedule a first fetch."""
         self._unsub_interval = async_track_time_interval(
             self._hass,
             self._fallback_poll,
             timedelta(minutes=DEFAULT_FALLBACK_POLL_MINUTES),
         )
-        # Fetch once on startup so sensors are populated immediately.
-        await self._do_fetch()
+        # Schedule first fetch in background — never block HA bootstrap.
+        self._fetch_task = self._hass.async_create_task(self._do_fetch())
 
     async def async_unload(self) -> None:
         """Cancel all pending tasks and remove the interval listener."""
