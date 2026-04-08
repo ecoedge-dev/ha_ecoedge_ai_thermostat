@@ -81,7 +81,9 @@ class ProfileFetcher:
         """Schedule a delayed fetch. Resets the timer if called again before it fires."""
         if self._fetch_task and not self._fetch_task.done():
             self._fetch_task.cancel()
-        self._fetch_task = self._hass.async_create_task(self._delayed_fetch())
+        self._fetch_task = self._hass.async_create_background_task(
+            self._delayed_fetch(), "ecoedge_profile_fetch"
+        )
 
     async def async_setup(self) -> None:
         """Register the 30-minute fallback poll and schedule a first fetch."""
@@ -91,7 +93,9 @@ class ProfileFetcher:
             timedelta(minutes=DEFAULT_FALLBACK_POLL_MINUTES),
         )
         # Schedule first fetch in background — never block HA bootstrap.
-        self._fetch_task = self._hass.async_create_task(self._do_fetch())
+        self._fetch_task = self._hass.async_create_background_task(
+            self._do_fetch(), "ecoedge_initial_profile_fetch"
+        )
 
     async def async_unload(self) -> None:
         """Cancel all pending tasks and remove the interval listener."""
