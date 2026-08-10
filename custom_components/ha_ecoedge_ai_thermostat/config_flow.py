@@ -26,12 +26,14 @@ from .const import (
     CONF_PASSWORD,
     CONF_REFRESH_TOKEN,
     CONF_ROTATE_TOKEN,
+    CONF_SYNC_HASH,
     CONF_TIMEOUT_SECONDS,
     DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
     DOMAIN,
     SYNC_ENTITIES_URL,
 )
+from .util import sync_fingerprint
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -242,13 +244,22 @@ async def _async_update_device(flow, data: dict[str, Any]) -> None:
 
 
 async def _async_sync_entities(flow, data: dict[str, Any]) -> None:
-    """Sync thermostat and outdoor sensor lists to the backend."""
+    """Sync thermostat and outdoor sensor lists to the backend.
+
+    v0.5.0 (audit P1.6): skipped when the lists match the last successful sync
+    (fingerprint stored in the entry). On success the fingerprint is written
+    into `data`, so callers must run this BEFORE persisting the entry.
+    """
     token = data.get(CONF_API_KEY)
     if not token:
         return
     thermostats = _ensure_list(data.get(CONF_INCLUDE))
     outdoor_sensor = data.get(CONF_OUTDOOR_SENSOR)
     outdoor_sensors = [outdoor_sensor] if outdoor_sensor else []
+    fingerprint = sync_fingerprint(thermostats, outdoor_sensors)
+    if data.get(CONF_SYNC_HASH) == fingerprint:
+        _LOGGER.debug("Entity lists unchanged — skipping sync")
+        return
     # Build URL from the configured endpoint so it works with any deployment
     endpoint = (data.get(CONF_ENDPOINT) or "").rstrip("/")
     sync_url = f"{endpoint}/api/device/sync-entities" if endpoint else SYNC_ENTITIES_URL
@@ -264,6 +275,7 @@ async def _async_sync_entities(flow, data: dict[str, Any]) -> None:
                 _LOGGER.warning("Entity sync returned HTTP %s from %s", resp.status, sync_url)
             else:
                 _LOGGER.debug("Entity sync OK: %s", await resp.text())
+                data[CONF_SYNC_HASH] = fingerprint
     except Exception as err:
         _LOGGER.warning("Entity sync failed (non-fatal): %s", err)
 
@@ -280,6 +292,9 @@ async def _async_login(flow, data: dict[str, Any], password: str) -> dict[str, A
         "timezone": str(flow.hass.config.time_zone),
         "client_name": CLIENT_NAME,
         "client_id": data.get(CONF_CLIENT_ID) or "",
+        # v0.5.0 (audit M8): without force the backend returns the existing
+        # still-valid token, so the "rotate access token" checkbox did nothing.
+        "force": bool(data.get(CONF_ROTATE_TOKEN, False)),
     }
     session = aiohttp_client.async_get_clientsession(flow.hass)
 
@@ -308,7 +323,9 @@ async def _async_login(flow, data: dict[str, Any], password: str) -> dict[str, A
 
 
 class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    VERSION = 3
+    # v4 (audit H6): unique_id is the backend client_id, not home_id —
+    # migration lives in __init__.async_migrate_entry
+    VERSION = 4
 
     def __init__(self) -> None:
         self._reconfigure_entry: ConfigEntry | None = None
@@ -370,17 +387,22 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         errors["base"] = "invalid_config"
                     else:
                         if self._reconfigure_entry:
+                            # sync first — it stamps the fingerprint into data
+                            await _async_sync_entities(self, data)
                             self.hass.config_entries.async_update_entry(
                                 self._reconfigure_entry, data=data
                             )
-                            await _async_sync_entities(self, data)
                             await self.hass.config_entries.async_reload(
                                 self._reconfigure_entry.entry_id
                             )
                             self._reconfigure_entry = None
                             return self.async_abort(reason="reconfigure_successful")
 
-                        unique_id = data.get(CONF_HOME_ID) or f"{data[CONF_EMAIL]}@{data[CONF_ENDPOINT]}"
+                        unique_id = (
+                            data.get(CONF_CLIENT_ID)
+                            or data.get(CONF_HOME_ID)
+                            or f"{data[CONF_EMAIL]}@{data[CONF_ENDPOINT]}"
+                        )
                         await self.async_set_unique_id(unique_id, raise_on_progress=False)
                         self._abort_if_unique_id_configured(updates=data)
                         title = data.get(CONF_HOME_ID) or data[CONF_EMAIL]
@@ -476,7 +498,11 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except vol.Invalid:
             return self.async_abort(reason="invalid_config")
 
-        unique_id = data.get(CONF_HOME_ID) or f"{data[CONF_EMAIL]}@{data[CONF_ENDPOINT]}"
+        unique_id = (
+            data.get(CONF_CLIENT_ID)
+            or data.get(CONF_HOME_ID)
+            or f"{data[CONF_EMAIL]}@{data[CONF_ENDPOINT]}"
+        )
         await self.async_set_unique_id(unique_id, raise_on_progress=False)
         self._abort_if_unique_id_configured(updates=data)
         title = data.get(CONF_HOME_ID) or data[CONF_EMAIL]
@@ -539,10 +565,11 @@ class HaAiPushOptionsFlowHandler(config_entries.OptionsFlow):
                     else:
                         data.pop(CONF_ROTATE_TOKEN, None)
                         data.pop(CONF_PASSWORD, None)
+                        # sync first — it stamps the fingerprint into data
+                        await _async_sync_entities(self, data)
                         self.hass.config_entries.async_update_entry(
                             self.config_entry, data=data, options={}
                         )
-                        await _async_sync_entities(self, data)
                         return self.async_create_entry(data={})
 
         form_values = (

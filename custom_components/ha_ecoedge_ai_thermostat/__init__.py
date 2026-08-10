@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -13,6 +14,7 @@ from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
 
 from .config_schema import DOMAIN_SCHEMA
 from .const import (
@@ -26,9 +28,10 @@ from .const import (
     CONF_INCLUDE,
     CONF_OUTDOOR_SENSOR,
     CONF_REFRESH_TOKEN,
+    CONF_SYNC_HASH,
     CONF_TIMEOUT_SECONDS,
+    DEFAULT_DEBOUNCE_MAX_WAIT_SECONDS,
     DEFAULT_DEBOUNCE_SECONDS,
-    DEFAULT_FETCH_DELAY_SECONDS,
     DEFAULT_REFRESH_TIMEOUT_SECONDS,
     DEFAULT_RETRY_ATTEMPTS,
     DEFAULT_RETRY_BACKOFF,
@@ -36,7 +39,8 @@ from .const import (
     DOMAIN,
     SYNC_ENTITIES_URL,
 )
-from .profile_fetcher import ProfileFetcher
+from .coordinator import EcoEdgeCoordinator
+from .util import sync_fingerprint
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -172,10 +176,41 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """v4 (audit H6): unique_id becomes client_id.
+
+    home_id was the old unique_id, so two homes both named "Home" could not
+    coexist on one HA instance. client_id is backend-issued and unique per
+    device. Entries that never logged in keep their old unique_id.
+    """
+    if entry.version > 4:
+        return False  # downgrade from a future version — not supported
+    if entry.version < 4:
+        conf = {**entry.data, **entry.options}
+        client_id = conf.get(CONF_CLIENT_ID)
+        hass.config_entries.async_update_entry(
+            entry,
+            unique_id=str(client_id) if client_id else entry.unique_id,
+            version=4,
+        )
+    return True
+
+
+def _config_fingerprint(entry: ConfigEntry) -> str:
+    """User-visible config only — volatile bookkeeping must not force reloads."""
+    conf = {**entry.data, **entry.options}
+    for volatile in (CONF_API_KEY, CONF_REFRESH_TOKEN, CONF_SYNC_HASH):
+        conf.pop(volatile, None)
+    return json.dumps(conf, sort_keys=True, default=str)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtime = HaAiPushRuntime(hass, entry)
     await runtime.async_setup()
-    hass.data[DOMAIN][entry.entry_id] = {"runtime": runtime, "fetcher": runtime.fetcher}
+    hass.data[DOMAIN][entry.entry_id] = {
+        "runtime": runtime,
+        "coordinator": runtime.coordinator,
+    }
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     return True
@@ -191,28 +226,54 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload only when user-visible config changed.
+
+    Token refreshes and sync-hash bookkeeping also update the entry; reloading
+    for those tore the whole runtime down mid-flush (and re-pushed the full
+    snapshot) every ~30 days for no reason.
+    """
+    entry_data = hass.data[DOMAIN].get(entry.entry_id)
+    runtime: HaAiPushRuntime | None = entry_data["runtime"] if entry_data else None
+    if runtime and runtime.config_fingerprint == _config_fingerprint(entry):
+        _LOGGER.debug("Entry update is bookkeeping-only — skipping reload")
+        return
     await hass.config_entries.async_reload(entry.entry_id)
 
 
 class DebouncedQueue:
-    def __init__(self, debounce_seconds: int):
+    def __init__(
+        self,
+        debounce_seconds: int,
+        max_wait_seconds: int = DEFAULT_DEBOUNCE_MAX_WAIT_SECONDS,
+    ):
         self.debounce_seconds = debounce_seconds
+        self.max_wait_seconds = max_wait_seconds
         self._lock = asyncio.Lock()
         self._pending: set[str] = set()
         self._task: asyncio.Task | None = None
+        self._first_pending_at: float | None = None
 
     async def add(self, entity_id: str, flush_cb):
         async with self._lock:
+            now = asyncio.get_running_loop().time()
             self._pending.add(entity_id)
+            if self._first_pending_at is None:
+                self._first_pending_at = now
+            # v0.5.0 (audit H1): the trailing debounce resets on every event, so
+            # a sustained storm could postpone the flush forever — cap the total
+            # wait at max_wait_seconds from the FIRST pending event.
+            deadline_in = self._first_pending_at + self.max_wait_seconds - now
+            delay = min(float(self.debounce_seconds), max(0.0, deadline_in))
             if self._task and not self._task.done():
                 self._task.cancel()
-            self._task = asyncio.create_task(self._flush_later(flush_cb))
+            self._task = asyncio.create_task(self._flush_later(delay, flush_cb))
 
-    async def _flush_later(self, flush_cb):
-        await asyncio.sleep(self.debounce_seconds)
+    async def _flush_later(self, delay: float, flush_cb):
+        await asyncio.sleep(delay)
         async with self._lock:
             ids = sorted(self._pending)
             self._pending.clear()
+            self._first_pending_at = None
         await flush_cb(ids)
 
     async def async_cancel(self) -> None:
@@ -220,6 +281,7 @@ class DebouncedQueue:
             task = self._task
             self._task = None
             self._pending.clear()
+            self._first_pending_at = None
         if task and not task.done():
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -233,10 +295,12 @@ class HaAiPushRuntime:
         self._unsub: Callable[[], None] | None = None
         self._queue: DebouncedQueue | None = None
         self._initial_task: asyncio.Task | None = None
-        self.fetcher: ProfileFetcher | None = None
+        self.coordinator: EcoEdgeCoordinator | None = None
+        self.config_fingerprint: str = ""
 
     async def async_setup(self) -> None:
         conf = {**self.entry.data, **self.entry.options}
+        self.config_fingerprint = _config_fingerprint(self.entry)
 
         endpoint = conf[CONF_ENDPOINT]
         api_key = conf.get(CONF_API_KEY)
@@ -250,20 +314,25 @@ class HaAiPushRuntime:
         timeout_seconds = conf.get(CONF_TIMEOUT_SECONDS, DEFAULT_TIMEOUT_SECONDS)
         home_id = conf.get(CONF_HOME_ID)
 
+        integration = await async_get_integration(self.hass, DOMAIN)
+        integration_version = str(integration.version)
+
         client = PushClient(self.hass, endpoint, api_key, refresh_token, client_id, timeout_seconds)
         queue = DebouncedQueue(debounce_seconds)
         self._queue = queue
 
-        fetcher = ProfileFetcher(
+        coordinator = EcoEdgeCoordinator(
             hass=self.hass,
+            entry=self.entry,
+            session=aiohttp_client.async_get_clientsession(self.hass),
             api_key=api_key or "",
             home_id=home_id or self.hass.config.location_name,
-            session=aiohttp_client.async_get_clientsession(self.hass),
-            fetch_delay=DEFAULT_FETCH_DELAY_SECONDS,
-            on_auth_failed=lambda: self.entry.async_start_reauth(self.hass),
         )
-        self.fetcher = fetcher
-        await fetcher.async_setup()
+        self.coordinator = coordinator
+        # First fetch in the background — never block HA bootstrap on the cloud.
+        self.hass.async_create_background_task(
+            coordinator.async_refresh(), "ecoedge_initial_profile_fetch"
+        )
 
         # Sync entity lists to backend on startup (background, non-blocking).
         self.hass.async_create_background_task(
@@ -292,6 +361,9 @@ class HaAiPushRuntime:
                 "event": "state_change_batch",
                 "count": len(items),
                 "items": items,
+                # v0.5.0: fleet adoption tracking — the receiver ignores unknown
+                # fields today and can start recording this without a client release
+                "integration_version": integration_version,
             }
 
             for attempt in range(1, DEFAULT_RETRY_ATTEMPTS + 1):
@@ -300,7 +372,7 @@ class HaAiPushRuntime:
                     _LOGGER.debug(
                         "Pushed %s climate states to %s", len(items), client.endpoint
                     )
-                    fetcher.schedule_fetch_after_push()
+                    coordinator.schedule_refresh_after_push()
                     return
                 except TokenExpiredError:
                     _LOGGER.debug("Access token expired, attempting refresh")
@@ -308,11 +380,11 @@ class HaAiPushRuntime:
                     if new_token:
                         new_data = {**self.entry.data, CONF_API_KEY: new_token}
                         self.hass.config_entries.async_update_entry(self.entry, data=new_data)
-                        fetcher.update_token(new_token)
+                        coordinator.update_token(new_token)
                         try:
                             await client.post(payload)
                             _LOGGER.debug("Pushed %s states after token refresh", len(items))
-                            fetcher.schedule_fetch_after_push()
+                            coordinator.schedule_refresh_after_push()
                         except Exception as e2:
                             _LOGGER.warning("Push failed after token refresh: %s", e2)
                     else:
@@ -370,6 +442,13 @@ class HaAiPushRuntime:
         if not api_key:
             return
         outdoor_sensors = [outdoor_sensor] if outdoor_sensor else []
+        # v0.5.0 (audit P1.6): skip when the lists haven't changed since the
+        # last successful sync — a plain HA restart must never give the backend
+        # an opportunity to archive profiles.
+        fingerprint = sync_fingerprint([str(t) for t in (thermostats or [])], outdoor_sensors)
+        if self.entry.data.get(CONF_SYNC_HASH) == fingerprint:
+            _LOGGER.debug("Entity lists unchanged — skipping startup sync")
+            return
         sync_url = f"{endpoint.rstrip('/')}/api/device/sync-entities" if endpoint else SYNC_ENTITIES_URL
         session = aiohttp_client.async_get_clientsession(self.hass)
         try:
@@ -383,6 +462,10 @@ class HaAiPushRuntime:
                     _LOGGER.warning("Startup entity sync: HTTP %s from %s", resp.status, sync_url)
                 else:
                     _LOGGER.debug("Startup entity sync OK")
+                    self.hass.config_entries.async_update_entry(
+                        self.entry,
+                        data={**self.entry.data, CONF_SYNC_HASH: fingerprint},
+                    )
         except Exception as err:
             _LOGGER.debug("Startup entity sync failed (non-fatal): %s", err)
 
@@ -398,8 +481,8 @@ class HaAiPushRuntime:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._initial_task
             self._initial_task = None
-        if self.fetcher:
-            await self.fetcher.async_unload()
-            self.fetcher = None
+        if self.coordinator:
+            await self.coordinator.async_shutdown()
+            self.coordinator = None
 
 
