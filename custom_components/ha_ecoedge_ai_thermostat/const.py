@@ -14,6 +14,9 @@ CONF_PASSWORD = "password"
 CONF_ROTATE_TOKEN = "rotate_token"
 CONF_CLIENT_ID = "client_id"
 CONF_REFRESH_TOKEN = "refresh_token"
+# Fingerprint of the last successfully synced entity lists (audit P1.6) —
+# bookkeeping, never shown in a form.
+CONF_SYNC_HASH = "sync_entities_hash"
 
 AUTH_LOGIN_URL = "https://ha.ecoedge.io/api/auth/login"
 AUTH_REFRESH_URL = "https://ha.ecoedge.io/api/auth/refresh"
@@ -22,6 +25,10 @@ SYNC_ENTITIES_URL = "https://ha.ecoedge.io/api/device/sync-entities"
 
 # Internal defaults — not exposed in the UI
 DEFAULT_DEBOUNCE_SECONDS = 3
+# Hard flush bound (audit H1): a sustained event storm keeps resetting the
+# trailing debounce, so the batch must flush at latest this long after the
+# first pending event.
+DEFAULT_DEBOUNCE_MAX_WAIT_SECONDS = 30
 DEFAULT_TIMEOUT_SECONDS = 10
 DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_RETRY_BACKOFF = 1.5

@@ -1,12 +1,12 @@
 """EcoEdge AI Thermostat — sensor platform.
 
 Creates 5 sensor entities per tracked thermostat, populated from the
-EcoEdge GraphQL API via ProfileFetcher (updated after each push cycle).
+EcoEdge GraphQL API via EcoEdgeCoordinator (refreshed after each push cycle
+plus a 30-minute fallback poll).
 """
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -18,10 +18,10 @@ from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.util import dt as dt_util
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .profile_fetcher import ProfileFetcher
+from .coordinator import EcoEdgeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,25 +31,24 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    runtime = hass.data[DOMAIN][entry.entry_id]
-    fetcher: ProfileFetcher = runtime["fetcher"]
+    coordinator: EcoEdgeCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
 
     registered: set[str] = set()
 
     def _make_sensors(entity_id: str) -> list[SensorEntity]:
         return [
-            AiSetpointSensor(fetcher, entry.entry_id, entity_id),
-            ModelSensor(fetcher, entry.entry_id, entity_id),
-            KPerHourSensor(fetcher, entry.entry_id, entity_id),
-            ConfidenceSensor(fetcher, entry.entry_id, entity_id),
-            SavingEst7dSensor(fetcher, entry.entry_id, entity_id),
+            AiSetpointSensor(coordinator, entry.entry_id, entity_id),
+            ModelSensor(coordinator, entry.entry_id, entity_id),
+            KPerHourSensor(coordinator, entry.entry_id, entity_id),
+            ConfidenceSensor(coordinator, entry.entry_id, entity_id),
+            SavingEst7dSensor(coordinator, entry.entry_id, entity_id),
         ]
 
     @callback
-    def _on_data_update(data: dict[str, Any]) -> None:
+    def _register_new_thermostats() -> None:
         """Add sensor entities for any newly discovered thermostats."""
         new_entities = []
-        for entity_id in data:
+        for entity_id in coordinator.data or {}:
             if entity_id not in registered:
                 registered.add(entity_id)
                 new_entities.extend(_make_sensors(entity_id))
@@ -57,25 +56,31 @@ async def async_setup_entry(
             _LOGGER.debug("EcoEdge sensors: registering %d new entity/entities", len(new_entities))
             async_add_entities(new_entities)
 
-    fetcher.add_listener(_on_data_update)
-
-    # Seed from data already available at setup time.
-    if fetcher.data:
-        _on_data_update(fetcher.data)
+    entry.async_on_unload(coordinator.async_add_listener(_register_new_thermostats))
+    _register_new_thermostats()
 
 
 # ---------------------------------------------------------------------------
 # Base class
 # ---------------------------------------------------------------------------
 
-class _EcoEdgeSensor(SensorEntity):
-    """Base for all EcoEdge profile sensors."""
+class _EcoEdgeSensor(CoordinatorEntity[EcoEdgeCoordinator], SensorEntity):
+    """Base for all EcoEdge profile sensors.
 
-    _attr_should_poll = False
+    Availability comes from the coordinator: sensors go unavailable as soon as
+    a poll fails (auth, network, backend error) instead of showing stale data.
+    """
+
     _attr_has_entity_name = True
+    _sensor_key: str
 
-    def __init__(self, fetcher: ProfileFetcher, entry_id: str, thermostat_entity_id: str) -> None:
-        self._fetcher = fetcher
+    def __init__(
+        self,
+        coordinator: EcoEdgeCoordinator,
+        entry_id: str,
+        thermostat_entity_id: str,
+    ) -> None:
+        super().__init__(coordinator)
         self._thermostat_entity_id = thermostat_entity_id
         display_name = (
             thermostat_entity_id.replace("climate.", "")
@@ -89,34 +94,11 @@ class _EcoEdgeSensor(SensorEntity):
             model="EcoEdge AI Thermostat",
         )
         self._attr_unique_id = f"{entry_id}_{thermostat_entity_id}_{self._sensor_key}"
-
-    @property
-    def _sensor_key(self) -> str:
-        raise NotImplementedError
+        self._attr_translation_key = self._sensor_key
 
     @property
     def _profile(self) -> dict | None:
-        return self._fetcher.data.get(self._thermostat_entity_id)
-
-    @property
-    def available(self) -> bool:
-        """v0.4.0 (audit C4): stale backend data must not masquerade as fresh.
-
-        Unavailable when no successful fetch has landed within 2.5x the
-        fallback poll interval (~75 min)."""
-        last = self._fetcher.last_success
-        if last is None:
-            return False
-        return (dt_util.utcnow() - last).total_seconds() < 75 * 60
-
-    def _on_data_update(self, _data: dict[str, Any]) -> None:
-        self.async_write_ha_state()
-
-    async def async_added_to_hass(self) -> None:
-        self._fetcher.add_listener(self._on_data_update)
-
-    async def async_will_remove_from_hass(self) -> None:
-        self._fetcher.remove_listener(self._on_data_update)
+        return (self.coordinator.data or {}).get(self._thermostat_entity_id)
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +109,6 @@ class AiSetpointSensor(_EcoEdgeSensor):
     """Current AI-computed target temperature setpoint."""
 
     _sensor_key = "ai_setpoint"
-    _attr_name = "AI Setpoint"
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -155,10 +136,13 @@ class AiSetpointSensor(_EcoEdgeSensor):
 
 
 class ModelSensor(_EcoEdgeSensor):
-    """Thermal model currently in use (RC / KQ / ✦ ML)."""
+    """Thermal model currently in use.
+
+    v0.5.0 (audit M3): the state is the bare model id (rc / kq / ml) so
+    automations can match on it; decoration lives in attributes.
+    """
 
     _sensor_key = "model"
-    _attr_name = "Model"
     _attr_icon = "mdi:brain"
 
     @property
@@ -166,17 +150,25 @@ class ModelSensor(_EcoEdgeSensor):
         p = self._profile
         if not p:
             return None
-        model = p.get("predictionModel") or "—"
         if p.get("mlBlendActive"):
-            return f"✦ ML ({model})"
-        return model
+            return "ml"
+        model = p.get("predictionModel")
+        return str(model).lower() if model else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        p = self._profile or {}
+        model = p.get("predictionModel")
+        return {
+            "base_model": str(model).lower() if model else None,
+            "ml_blend_active": bool(p.get("mlBlendActive")),
+        }
 
 
 class KPerHourSensor(_EcoEdgeSensor):
     """Heat loss coefficient k (°C/h) from the fitted thermal model."""
 
     _sensor_key = "k_per_hour"
-    _attr_name = "Heat Loss k/h"
     _attr_native_unit_of_measurement = "°C/h"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:home-thermometer-outline"
@@ -195,7 +187,6 @@ class ConfidenceSensor(_EcoEdgeSensor):
     """Model confidence score (0–100 %)."""
 
     _sensor_key = "confidence"
-    _attr_name = "Confidence"
     _attr_native_unit_of_measurement = "%"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:chart-bell-curve-cumulative"
@@ -216,7 +207,6 @@ class SavingEst7dSensor(_EcoEdgeSensor):
     """7-day rolling average energy saving estimate (%)."""
 
     _sensor_key = "saving_est_7d"
-    _attr_name = "Saving Est. 7d"
     _attr_native_unit_of_measurement = "%"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:leaf"
