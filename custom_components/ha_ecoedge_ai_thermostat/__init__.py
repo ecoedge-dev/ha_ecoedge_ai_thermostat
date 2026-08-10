@@ -1,40 +1,40 @@
 import asyncio
 import contextlib
 import logging
-from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 import aiohttp
 import voluptuous as vol
-
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_STATE_CHANGED
-from homeassistant.core import HomeAssistant, Event, callback
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.typing import ConfigType
 
 from .config_schema import DOMAIN_SCHEMA
 from .const import (
-    DOMAIN,
-    CONF_ENDPOINT,
-    CONF_API_KEY,
-    CONF_INCLUDE,
-    CONF_EXCLUDE,
-    CONF_DEBOUNCE_SECONDS,
-    CONF_TIMEOUT_SECONDS,
-    CONF_HOME_ID,
-    CONF_OUTDOOR_SENSOR,
-    CONF_CLIENT_ID,
-    CONF_REFRESH_TOKEN,
     AUTH_REFRESH_URL,
-    SYNC_ENTITIES_URL,
+    CONF_API_KEY,
+    CONF_CLIENT_ID,
+    CONF_DEBOUNCE_SECONDS,
+    CONF_ENDPOINT,
+    CONF_EXCLUDE,
+    CONF_HOME_ID,
+    CONF_INCLUDE,
+    CONF_OUTDOOR_SENSOR,
+    CONF_REFRESH_TOKEN,
+    CONF_TIMEOUT_SECONDS,
     DEFAULT_DEBOUNCE_SECONDS,
-    DEFAULT_TIMEOUT_SECONDS,
+    DEFAULT_FETCH_DELAY_SECONDS,
+    DEFAULT_REFRESH_TIMEOUT_SECONDS,
     DEFAULT_RETRY_ATTEMPTS,
     DEFAULT_RETRY_BACKOFF,
-    DEFAULT_REFRESH_TIMEOUT_SECONDS,
-    DEFAULT_FETCH_DELAY_SECONDS,
+    DEFAULT_TIMEOUT_SECONDS,
+    DOMAIN,
+    SYNC_ENTITIES_URL,
 )
 from .profile_fetcher import ProfileFetcher
 
@@ -49,33 +49,19 @@ class TokenExpiredError(Exception):
 
 
 def _utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _is_climate_entity(entity_id: str) -> bool:
     return entity_id.startswith("climate.")
 
 
-def _is_temperature_sensor(hass: HomeAssistant, entity_id: str) -> bool:
-    if not entity_id.startswith("sensor."):
-        return False
-    st = hass.states.get(entity_id)
-    if st is None:
-        return False
-    attrs = st.attributes or {}
-    device_class = (attrs.get("device_class") or "").lower()
-    if device_class == "temperature":
-        return True
-    unit = (attrs.get("unit_of_measurement") or "").lower()
-    return unit in ("c", "°c", "degc", "fahrenheit", "°f", "degf") or "celsius" in unit or "fahrenheit" in unit
-
-
 def _filter_entities(
     hass: HomeAssistant,
     entity_id: str,
-    include: List[str],
-    exclude: List[str],
-    extra_sensors: Optional[List[str]] = None,
+    include: list[str],
+    exclude: list[str],
+    extra_sensors: list[str] | None = None,
 ) -> bool:
     if exclude and entity_id in exclude:
         return False
@@ -83,10 +69,14 @@ def _filter_entities(
         return True
     if include:
         return entity_id in include
-    return _is_climate_entity(entity_id) or _is_temperature_sensor(hass, entity_id)
+    # v0.4.0 (audit C2): default is climate entities ONLY. The old fallback also
+    # pushed every temperature sensor in the home (bedroom sensors, fridge
+    # probes) — data over-collection and the source of backend binding noise.
+    # The configured outdoor sensor is covered by extra_sensors above.
+    return _is_climate_entity(entity_id)
 
 
-def _state_to_payload(hass: HomeAssistant, entity_id: str) -> Optional[Dict[str, Any]]:
+def _state_to_payload(hass: HomeAssistant, entity_id: str) -> dict[str, Any] | None:
     st = hass.states.get(entity_id)
     if st is None:
         return None
@@ -104,9 +94,9 @@ class PushClient:
         self,
         hass: HomeAssistant,
         endpoint: str,
-        api_key: Optional[str],
-        refresh_token: Optional[str],
-        client_id: Optional[str],
+        api_key: str | None,
+        refresh_token: str | None,
+        client_id: str | None,
         timeout_seconds: int,
     ):
         self.endpoint = endpoint.rstrip("/")
@@ -115,8 +105,10 @@ class PushClient:
         self.client_id = client_id
         self.timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         self.session = aiohttp_client.async_get_clientsession(hass)
+        # v0.4.0 (audit H4): concurrent flushes hitting 401 must not both rotate
+        self._refresh_lock = asyncio.Lock()
 
-    async def post(self, payload: Dict[str, Any]) -> None:
+    async def post(self, payload: dict[str, Any]) -> None:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -130,10 +122,20 @@ class PushClient:
             if resp.status >= 300:
                 raise RuntimeError(f"HTTP {resp.status}: {txt[:300]}")
 
-    async def async_refresh(self) -> Optional[str]:
-        """Exchange refresh_token for a new access token. Returns new token or None."""
+    async def async_refresh(self, failed_token: str | None = None) -> str | None:
+        """Exchange refresh_token for a new access token. Returns new token or None.
+
+        Serialized: if another flush already rotated the token while we waited
+        for the lock, reuse it instead of rotating again (audit H4).
+        """
         if not self.refresh_token:
             return None
+        async with self._refresh_lock:
+            if failed_token is not None and self.api_key and self.api_key != failed_token:
+                return self.api_key
+            return await self._do_refresh()
+
+    async def _do_refresh(self) -> str | None:
         try:
             async with self.session.post(
                 AUTH_REFRESH_URL,
@@ -183,7 +185,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_unload_platforms(entry, ["sensor"])
     entry_data = hass.data[DOMAIN].pop(entry.entry_id, None)
     if entry_data:
-        runtime: "HaAiPushRuntime" = entry_data["runtime"]
+        runtime: HaAiPushRuntime = entry_data["runtime"]
         await runtime.async_unload()
     return True
 
@@ -197,7 +199,7 @@ class DebouncedQueue:
         self.debounce_seconds = debounce_seconds
         self._lock = asyncio.Lock()
         self._pending: set[str] = set()
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
 
     async def add(self, entity_id: str, flush_cb):
         async with self._lock:
@@ -228,10 +230,10 @@ class HaAiPushRuntime:
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
-        self._unsub: Optional[Callable[[], None]] = None
-        self._queue: Optional[DebouncedQueue] = None
-        self._initial_task: Optional[asyncio.Task] = None
-        self.fetcher: Optional[ProfileFetcher] = None
+        self._unsub: Callable[[], None] | None = None
+        self._queue: DebouncedQueue | None = None
+        self._initial_task: asyncio.Task | None = None
+        self.fetcher: ProfileFetcher | None = None
 
     async def async_setup(self) -> None:
         conf = {**self.entry.data, **self.entry.options}
@@ -258,6 +260,7 @@ class HaAiPushRuntime:
             home_id=home_id or self.hass.config.location_name,
             session=aiohttp_client.async_get_clientsession(self.hass),
             fetch_delay=DEFAULT_FETCH_DELAY_SECONDS,
+            on_auth_failed=lambda: self.entry.async_start_reauth(self.hass),
         )
         self.fetcher = fetcher
         await fetcher.async_setup()
@@ -268,7 +271,7 @@ class HaAiPushRuntime:
             "ecoedge_entity_sync",
         )
 
-        async def flush(entity_ids: List[str]) -> None:
+        async def flush(entity_ids: list[str]) -> None:
             items = []
             for eid in entity_ids:
                 p = _state_to_payload(self.hass, eid)
@@ -301,7 +304,7 @@ class HaAiPushRuntime:
                     return
                 except TokenExpiredError:
                     _LOGGER.debug("Access token expired, attempting refresh")
-                    new_token = await client.async_refresh()
+                    new_token = await client.async_refresh(failed_token=client.api_key)
                     if new_token:
                         new_data = {**self.entry.data, CONF_API_KEY: new_token}
                         self.hass.config_entries.async_update_entry(self.entry, data=new_data)
@@ -314,9 +317,12 @@ class HaAiPushRuntime:
                             _LOGGER.warning("Push failed after token refresh: %s", e2)
                     else:
                         _LOGGER.warning(
-                            "Token expired and refresh failed for %s — re-authentication required",
+                            "Token expired and refresh failed for %s — starting re-auth flow",
                             client.endpoint,
                         )
+                        # v0.4.0 (audit C3): surface HA's standard re-authenticate
+                        # badge instead of warning into the void. Idempotent.
+                        self.entry.async_start_reauth(self.hass)
                     return
                 except Exception as e:
                     if attempt == DEFAULT_RETRY_ATTEMPTS:
@@ -358,7 +364,7 @@ class HaAiPushRuntime:
         )
 
     async def _sync_entities_to_backend(
-        self, endpoint: str, api_key: str, thermostats: list, outdoor_sensor: Optional[str]
+        self, endpoint: str, api_key: str, thermostats: list, outdoor_sensor: str | None
     ) -> None:
         """Sync entity lists to backend. Non-fatal on failure."""
         if not api_key:

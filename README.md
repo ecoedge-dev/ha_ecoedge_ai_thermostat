@@ -1,9 +1,9 @@
 # EcoEdge AI Thermostat
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![HA Version](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue.svg)](https://www.home-assistant.io/)
+[![HA Version](https://img.shields.io/badge/Home%20Assistant-2024.12%2B-blue.svg)](https://www.home-assistant.io/)
 
-**Stop heating an empty house.** EcoEdge AI Thermostat connects your Home Assistant thermostats to the EcoEdge cloud, where an AI engine learns how your home heats and cools, then automatically optimizes your setpoints using real-time weather forecasts — so you're always comfortable and never wasting energy.
+**Stop heating more than you need.** EcoEdge AI Thermostat connects your Home Assistant thermostats to the EcoEdge cloud, where a physics engine learns how your home heats and cools and recommends energy-saving setpoints using real weather forecasts — visible on your dashboard and as native sensor entities in Home Assistant.
 
 ---
 
@@ -23,6 +23,7 @@
 - **AI-powered setpoint recommendations** — 24-hour predictive horizon updated continuously
 - **Thermal learning** — adapts to your home's insulation, size, and heating system
 - **Weather-aware** — uses real forecasts (temperature, wind, precipitation)
+- **Native HA sensors** — AI setpoint, model, heat loss, confidence and saving estimate per thermostat, usable in your own automations
 - **Multi-thermostat** — select which thermostats to include
 - **Outdoor sensor support** — required for thermal modeling; use a local sensor for highest accuracy
 - **Secure** — all data is sent over encrypted HTTPS to the EcoEdge API (`ha.ecoedge.io`)
@@ -32,7 +33,7 @@
 
 ## Requirements
 
-- Home Assistant 2023.1 or newer
+- Home Assistant 2024.12 or newer
 - An EcoEdge account — [Sign up](https://dashboard.ecoedge.io/) or [Sign in](https://dashboard.ecoedge.io/)
 - At least one `climate` entity in Home Assistant
 

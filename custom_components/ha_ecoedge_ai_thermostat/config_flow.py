@@ -1,10 +1,8 @@
-import asyncio
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 import voluptuous as vol
 from aiohttp import ClientError, ClientTimeout
-
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import callback
@@ -15,7 +13,9 @@ from homeassistant.helpers.selector import selector
 
 from .config_schema import DOMAIN_SCHEMA
 from .const import (
+    AUTH_LOGIN_URL,
     CONF_API_KEY,
+    CONF_CLIENT_ID,
     CONF_DEBOUNCE_SECONDS,
     CONF_EMAIL,
     CONF_ENDPOINT,
@@ -24,15 +24,13 @@ from .const import (
     CONF_INCLUDE,
     CONF_OUTDOOR_SENSOR,
     CONF_PASSWORD,
-    CONF_ROTATE_TOKEN,
-    CONF_CLIENT_ID,
     CONF_REFRESH_TOKEN,
+    CONF_ROTATE_TOKEN,
     CONF_TIMEOUT_SECONDS,
-    AUTH_LOGIN_URL,
-    SYNC_ENTITIES_URL,
     DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
     DOMAIN,
+    SYNC_ENTITIES_URL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,7 +50,7 @@ DOMAIN_FIELDS = {
 }
 
 
-def _normalize_user_input(user_input: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_user_input(user_input: dict[str, Any]) -> dict[str, Any]:
     data = dict(user_input)
 
     items = data.get(CONF_INCLUDE)
@@ -91,7 +89,7 @@ def _normalize_user_input(user_input: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-def _build_config_schema(defaults: Dict[str, Any]) -> vol.Schema:
+def _build_config_schema(defaults: dict[str, Any]) -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(CONF_EMAIL, default=defaults.get(CONF_EMAIL, "")): str,
@@ -118,7 +116,7 @@ def _build_config_schema(defaults: Dict[str, Any]) -> vol.Schema:
     )
 
 
-def _build_options_schema(defaults: Dict[str, Any]) -> vol.Schema:
+def _build_options_schema(defaults: dict[str, Any]) -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(CONF_EMAIL, default=defaults.get(CONF_EMAIL, "")): str,
@@ -149,7 +147,7 @@ def _build_options_schema(defaults: Dict[str, Any]) -> vol.Schema:
     )
 
 
-def _blank_form_defaults(location_name: Optional[str] = None) -> Dict[str, Any]:
+def _blank_form_defaults(location_name: str | None = None) -> dict[str, Any]:
     return {
         CONF_EMAIL: "",
         CONF_PASSWORD: "",
@@ -161,7 +159,7 @@ def _blank_form_defaults(location_name: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
-def _options_form_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
+def _options_form_defaults(config: dict[str, Any]) -> dict[str, Any]:
     defaults = _blank_form_defaults()
     defaults.update(
         {
@@ -196,7 +194,7 @@ def _ensure_list(value: Any) -> list[str]:
     return []
 
 
-def _apply_domain_schema(data: Dict[str, Any]) -> Dict[str, Any]:
+def _apply_domain_schema(data: dict[str, Any]) -> dict[str, Any]:
     schema_input = {k: data[k] for k in DOMAIN_FIELDS if k in data}
     validated = DOMAIN_SCHEMA(schema_input)
     for key, value in data.items():
@@ -217,7 +215,7 @@ class InvalidAuth(HomeAssistantError):
     """Raised when credentials are invalid."""
 
 
-async def _async_update_device(flow, data: Dict[str, Any]) -> None:
+async def _async_update_device(flow, data: dict[str, Any]) -> None:
     """Push updated home_id/location_name to the backend without re-authenticating."""
     token = data.get(CONF_API_KEY)
     endpoint = data.get(CONF_ENDPOINT, "").rstrip("/")
@@ -230,7 +228,9 @@ async def _async_update_device(flow, data: Dict[str, Any]) -> None:
             url,
             json={
                 "token": token,
-                "home_id": data.get(CONF_HOME_ID) or flow.hass.config.location_name,
+                # v0.4.0 (audit C1): only send home_id when the entry actually has
+                # one — a location_name fallback silently RENAMED the home backend-side.
+                **({"home_id": data[CONF_HOME_ID]} if data.get(CONF_HOME_ID) else {}),
                 "location_name": flow.hass.config.location_name,
             },
             timeout=ClientTimeout(total=DEFAULT_TIMEOUT_SECONDS),
@@ -241,7 +241,7 @@ async def _async_update_device(flow, data: Dict[str, Any]) -> None:
         _LOGGER.debug("Device update failed (non-fatal): %s", err)
 
 
-async def _async_sync_entities(flow, data: Dict[str, Any]) -> None:
+async def _async_sync_entities(flow, data: dict[str, Any]) -> None:
     """Sync thermostat and outdoor sensor lists to the backend."""
     token = data.get(CONF_API_KEY)
     if not token:
@@ -268,7 +268,7 @@ async def _async_sync_entities(flow, data: Dict[str, Any]) -> None:
         _LOGGER.warning("Entity sync failed (non-fatal): %s", err)
 
 
-async def _async_login(flow, data: Dict[str, Any], password: str) -> Dict[str, Any]:
+async def _async_login(flow, data: dict[str, Any], password: str) -> dict[str, Any]:
     url = AUTH_LOGIN_URL
     payload = {
         "email": data[CONF_EMAIL],
@@ -296,7 +296,7 @@ async def _async_login(flow, data: Dict[str, Any], password: str) -> Dict[str, A
                 _LOGGER.debug("Auth request failed for %s: %s (%s)", url, resp.status, text)
                 raise AuthRequestError
             resp_data = await resp.json()
-    except asyncio.TimeoutError as err:
+    except TimeoutError as err:
         raise CannotConnect from err
     except ClientError as err:
         raise CannotConnect from err
@@ -319,7 +319,7 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return HaAiPushOptionsFlowHandler()
 
     async def async_step_user(
-        self, user_input: Dict[str, Any] | None = None
+        self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         errors: dict[str, str] = {}
         if user_input is None and self._reconfigure_entry:
@@ -392,8 +392,49 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_reauth(self, entry_data) -> FlowResult:
+        """Triggered by ConfigEntryAuthFailed / async_start_reauth (audit C3)."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        errors: dict[str, str] = {}
+        entry = self._get_reauth_entry()
+        merged = {**entry.data, **entry.options}
+
+        if user_input is not None:
+            password = (user_input.get(CONF_PASSWORD) or "").strip()
+            if not password:
+                errors["password"] = "password_required"
+            else:
+                try:
+                    resp = await _async_login(self, dict(merged), password)
+                except InvalidAuth:
+                    errors["base"] = "invalid_auth"
+                except CannotConnect:
+                    errors["base"] = "cannot_connect"
+                except AuthRequestError:
+                    errors["base"] = "auth_request_failed"
+                else:
+                    updates = {CONF_API_KEY: resp["token"]}
+                    if resp.get("client_id"):
+                        updates[CONF_CLIENT_ID] = resp["client_id"]
+                    if resp.get("refresh_token"):
+                        updates[CONF_REFRESH_TOKEN] = resp["refresh_token"]
+                    return self.async_update_reload_and_abort(
+                        entry, data={**entry.data, **updates}, reason="reauth_successful"
+                    )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            description_placeholders={"email": merged.get(CONF_EMAIL, "")},
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            errors=errors,
+        )
+
     async def async_step_reconfigure(
-        self, user_input: Dict[str, Any] | None = None
+        self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         entry_id = self.context.get("entry_id")
         entry = self.hass.config_entries.async_get_entry(entry_id) if entry_id else None
@@ -402,7 +443,7 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._reconfigure_entry = entry
         return await self.async_step_user(user_input)
 
-    async def async_step_import(self, user_input: Dict[str, Any]) -> FlowResult:
+    async def async_step_import(self, user_input: dict[str, Any]) -> FlowResult:
         parsed = _normalize_user_input(user_input)
         password = parsed.pop(CONF_PASSWORD, "")
         if not password:
@@ -444,12 +485,12 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class HaAiPushOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(
-        self, user_input: Dict[str, Any] | None = None
+        self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         return await self.async_step_user(user_input)
 
     async def async_step_user(
-        self, user_input: Dict[str, Any] | None = None
+        self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         errors: dict[str, str] = {}
         merged = {**self.config_entry.data, **self.config_entry.options}
@@ -480,9 +521,7 @@ class HaAiPushOptionsFlowHandler(config_entries.OptionsFlow):
                         if not parsed.get(CONF_HOME_ID) and resp.get("home_id"):
                             parsed[CONF_HOME_ID] = resp["home_id"]
                     else:
-                        parsed[CONF_API_KEY] = merged.get(CONF_API_KEY)
-                        parsed[CONF_CLIENT_ID] = merged.get(CONF_CLIENT_ID, "")
-                        await _async_update_device(self, parsed)
+                        await _async_update_device(self, {**merged, **parsed})
                 except InvalidAuth:
                     errors["base"] = "invalid_auth"
                 except CannotConnect:
@@ -490,14 +529,18 @@ class HaAiPushOptionsFlowHandler(config_entries.OptionsFlow):
                 except AuthRequestError:
                     errors["base"] = "auth_request_failed"
                 else:
+                    # v0.4.0 (audit C1): MERGE over the existing entry — the old
+                    # rebuild-from-form-fields dropped refresh_token and home_id,
+                    # killing token auto-refresh and renaming the home backend-side.
                     try:
-                        data = _apply_domain_schema(parsed)
+                        data = _apply_domain_schema({**merged, **parsed})
                     except vol.Invalid:
                         errors["base"] = "invalid_config"
                     else:
                         data.pop(CONF_ROTATE_TOKEN, None)
+                        data.pop(CONF_PASSWORD, None)
                         self.hass.config_entries.async_update_entry(
-                            self.config_entry, data=data
+                            self.config_entry, data=data, options={}
                         )
                         await _async_sync_entities(self, data)
                         return self.async_create_entry(data={})

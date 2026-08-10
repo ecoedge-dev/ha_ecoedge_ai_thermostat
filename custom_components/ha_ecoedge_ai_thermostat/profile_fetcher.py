@@ -5,15 +5,19 @@ plus a 30-minute fallback poll to handle HA restarts and idle periods.
 """
 import asyncio
 import logging
-from datetime import timedelta
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import aiohttp
-
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import DEFAULT_FETCH_DELAY_SECONDS, DEFAULT_FALLBACK_POLL_MINUTES, GRAPHQL_URL
+from .const import (
+    DEFAULT_FALLBACK_POLL_MINUTES,
+    DEFAULT_FETCH_DELAY_SECONDS,
+    GRAPHQL_URL,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,16 +58,20 @@ class ProfileFetcher:
         home_id: str,
         session: aiohttp.ClientSession,
         fetch_delay: int = DEFAULT_FETCH_DELAY_SECONDS,
+        on_auth_failed: Callable[[], None] | None = None,
     ) -> None:
         self._hass = hass
         self._api_key = api_key
         self._home_id = home_id
         self._session = session
         self._fetch_delay = fetch_delay
-        self._fetch_task: Optional[asyncio.Task] = None
-        self._unsub_interval: Optional[Callable[[], None]] = None
-        self._listeners: list[Callable[[Dict[str, Any]], None]] = []
-        self.data: Dict[str, Any] = {}
+        self._fetch_task: asyncio.Task | None = None
+        self._unsub_interval: Callable[[], None] | None = None
+        self._listeners: list[Callable[[dict[str, Any]], None]] = []
+        self._on_auth_failed = on_auth_failed
+        self.data: dict[str, Any] = {}
+        # v0.4.0 (audit C4): sensors report unavailable when this goes stale
+        self.last_success: datetime | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -73,9 +81,13 @@ class ProfileFetcher:
         """Called by __init__.py after a token refresh so fetcher uses new token."""
         self._api_key = new_token
 
-    def add_listener(self, cb: Callable[[Dict[str, Any]], None]) -> None:
+    def add_listener(self, cb: Callable[[dict[str, Any]], None]) -> None:
         """Register a callback invoked with fresh data after every successful fetch."""
         self._listeners.append(cb)
+
+    def remove_listener(self, cb: Callable[[dict[str, Any]], None]) -> None:
+        if cb in self._listeners:
+            self._listeners.remove(cb)
 
     def schedule_fetch_after_push(self) -> None:
         """Schedule a delayed fetch. Resets the timer if called again before it fires."""
@@ -138,9 +150,9 @@ class ProfileFetcher:
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 if resp.status == 401:
-                    _LOGGER.warning(
-                        "EcoEdge profile fetch: token expired — re-authenticate in integration settings"
-                    )
+                    _LOGGER.warning("EcoEdge profile fetch: token rejected — starting re-auth flow")
+                    if self._on_auth_failed:
+                        self._on_auth_failed()
                     return
                 if resp.status >= 400:
                     _LOGGER.warning(
@@ -161,6 +173,7 @@ class ProfileFetcher:
             return
 
         self.data = {p["entityId"]: p for p in profiles if p.get("entityId")}
+        self.last_success = datetime.now(UTC)
         _LOGGER.debug("EcoEdge profile fetch: updated %d profile(s)", len(self.data))
 
         for cb in self._listeners:

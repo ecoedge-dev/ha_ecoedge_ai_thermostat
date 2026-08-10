@@ -1,3 +1,4 @@
 {
-  "name": "EcoEdge AI Thermostat"
+  "name": "EcoEdge AI Thermostat",
+  "homeassistant": "2024.12.0"
 }
