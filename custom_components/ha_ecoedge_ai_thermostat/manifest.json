@@ -1,12 +1,18 @@
 {
   "domain": "ha_ecoedge_ai_thermostat",
   "name": "EcoEdge AI Thermostat",
-  "version": "0.3.1",
-  "homeassistant": ">=2024.1.0",
-  "documentation": "https://github.com/ecoedge-dev/ha_ecoedge_ai_thermostat",
-  "issue_tracker": "https://github.com/ecoedge-dev/ha_ecoedge_ai_thermostat/issues",
+  "codeowners": [
+    "@ecoedge-dev"
+  ],
   "config_flow": true,
+  "documentation": "https://github.com/ecoedge-dev/ha_ecoedge_ai_thermostat",
+  "homeassistant": ">=2024.12.0",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/ecoedge-dev/ha_ecoedge_ai_thermostat/issues",
+  "loggers": [
+    "custom_components.ha_ecoedge_ai_thermostat"
+  ],
   "requirements": [],
-  "codeowners": ["@ecoedge-dev"],
-  "iot_class": "cloud_polling"
+  "version": "0.4.0"
 }

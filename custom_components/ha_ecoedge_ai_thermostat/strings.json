@@ -13,6 +13,13 @@
           "outdoor_sensor": "Outdoor temperature sensor",
           "debounce_seconds": "Debounce (seconds)"
         }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate EcoEdge",
+        "description": "The access token for {email} is no longer valid. Enter your EcoEdge password to reconnect.",
+        "data": {
+          "password": "Account password"
+        }
       }
     },
     "error": {
@@ -21,6 +28,12 @@
       "invalid_auth": "Invalid email or password.",
       "auth_request_failed": "Authentication failed. Please try again or contact info@ecoedge.io.",
       "password_required": "Password is required."
+    },
+    "abort": {
+      "unknown_entry": "Configuration entry could not be found.",
+      "reconfigure_successful": "Settings updated successfully. The integration is reloading to apply your changes.",
+      "reauth_successful": "Re-authentication successful. The integration has reconnected.",
+      "already_configured": "This home is already configured."
     }
   },
   "options": {
@@ -48,40 +61,23 @@
       "password_required": "Password is required."
     }
   },
-  "reconfigure": {
-    "step": {
-      "user": {
-        "title": "Reconfigure EcoEdge AI Thermostat",
-        "description": "Re-authenticate with your EcoEdge account to update credentials.",
-        "data": {
-          "email": "Account email",
-          "password": "Account password",
-          "home_id": "Home ID (optional)",
-          "include_entities": "Select Thermostats",
-          "outdoor_sensor": "Outdoor temperature sensor",
-          "debounce_seconds": "Debounce (seconds)"
-        }
-      }
-    },
-    "error": {
-      "invalid_config": "Invalid configuration; please verify your input and try again.",
-      "cannot_connect": "Cannot reach the EcoEdge service. Check your internet connection.",
-      "invalid_auth": "Invalid email or password.",
-      "auth_request_failed": "Authentication failed. Please try again or contact info@ecoedge.io.",
-      "password_required": "Password is required."
-    }
-  },
-  "abort": {
-    "unknown_entry": "Configuration entry could not be found.",
-    "reconfigure_successful": "Settings updated successfully. The integration is reloading to apply your changes."
-  },
   "entity": {
     "sensor": {
-      "ai_setpoint": {"name": "AI Setpoint"},
-      "model": {"name": "Model"},
-      "k_per_hour": {"name": "Heat Loss k/h"},
-      "confidence": {"name": "Confidence"},
-      "saving_est_7d": {"name": "Saving Est. 7d"}
+      "ai_setpoint": {
+        "name": "AI Setpoint"
+      },
+      "model": {
+        "name": "Model"
+      },
+      "k_per_hour": {
+        "name": "Heat Loss k/h"
+      },
+      "confidence": {
+        "name": "Confidence"
+      },
+      "saving_est_7d": {
+        "name": "Saving Est. 7d"
+      }
     }
   }
 }

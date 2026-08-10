@@ -6,7 +6,7 @@ EcoEdge GraphQL API via ProfileFetcher (updated after each push cycle).
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -18,6 +18,7 @@ from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .profile_fetcher import ProfileFetcher
@@ -45,7 +46,7 @@ async def async_setup_entry(
         ]
 
     @callback
-    def _on_data_update(data: Dict[str, Any]) -> None:
+    def _on_data_update(data: dict[str, Any]) -> None:
         """Add sensor entities for any newly discovered thermostats."""
         new_entities = []
         for entity_id in data:
@@ -97,17 +98,25 @@ class _EcoEdgeSensor(SensorEntity):
     def _profile(self) -> dict | None:
         return self._fetcher.data.get(self._thermostat_entity_id)
 
-    def _on_data_update(self, _data: Dict[str, Any]) -> None:
+    @property
+    def available(self) -> bool:
+        """v0.4.0 (audit C4): stale backend data must not masquerade as fresh.
+
+        Unavailable when no successful fetch has landed within 2.5x the
+        fallback poll interval (~75 min)."""
+        last = self._fetcher.last_success
+        if last is None:
+            return False
+        return (dt_util.utcnow() - last).total_seconds() < 75 * 60
+
+    def _on_data_update(self, _data: dict[str, Any]) -> None:
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
         self._fetcher.add_listener(self._on_data_update)
 
     async def async_will_remove_from_hass(self) -> None:
-        try:
-            self._fetcher._listeners.remove(self._on_data_update)
-        except ValueError:
-            pass
+        self._fetcher.remove_listener(self._on_data_update)
 
 
 # ---------------------------------------------------------------------------
