@@ -1,6 +1,5 @@
 {
   "config": {
-    "title": "EcoEdge AI Thermostat",
     "step": {
       "user": {
         "title": "Connect to EcoEdge",

@@ -18,6 +18,9 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+          # brands: audit P3 — pending submission to home-assistant/brands;
+          # remove this ignore once the logo PR is merged there
+          ignore: brands
 
   ruff:
     runs-on: ubuntu-latest
