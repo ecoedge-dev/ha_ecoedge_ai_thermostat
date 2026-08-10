@@ -13,5 +13,5 @@
     "custom_components.ha_ecoedge_ai_thermostat"
   ],
   "requirements": [],
-  "version": "0.5.0"
+  "version": "0.5.1"
 }

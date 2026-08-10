@@ -226,15 +226,28 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload only when user-visible config changed.
+    """Reload only when the runtime doesn't already reflect the entry.
 
     Token refreshes and sync-hash bookkeeping also update the entry; reloading
     for those tore the whole runtime down mid-flush (and re-pushed the full
     snapshot) every ~30 days for no reason.
+
+    v0.5.1: skipping is only safe when the RUNTIME wrote the update (it already
+    holds the new token in memory). A token rotated by the options flow must
+    reload, or the running coordinator keeps polling with the revoked token
+    and drops the user into reauth.
     """
     entry_data = hass.data[DOMAIN].get(entry.entry_id)
     runtime: HaAiPushRuntime | None = entry_data["runtime"] if entry_data else None
-    if runtime and runtime.config_fingerprint == _config_fingerprint(entry):
+    if runtime is None:
+        await hass.config_entries.async_reload(entry.entry_id)
+        return
+    conf = {**entry.data, **entry.options}
+    creds_current = (
+        conf.get(CONF_API_KEY) == runtime.current_api_key
+        and conf.get(CONF_REFRESH_TOKEN) == runtime.current_refresh_token
+    )
+    if creds_current and runtime.config_fingerprint == _config_fingerprint(entry):
         _LOGGER.debug("Entry update is bookkeeping-only — skipping reload")
         return
     await hass.config_entries.async_reload(entry.entry_id)
@@ -295,8 +308,18 @@ class HaAiPushRuntime:
         self._unsub: Callable[[], None] | None = None
         self._queue: DebouncedQueue | None = None
         self._initial_task: asyncio.Task | None = None
+        self._client: PushClient | None = None
         self.coordinator: EcoEdgeCoordinator | None = None
         self.config_fingerprint: str = ""
+
+    @property
+    def current_api_key(self) -> str | None:
+        """Live access token — client.api_key mutates on runtime refresh."""
+        return self._client.api_key if self._client else None
+
+    @property
+    def current_refresh_token(self) -> str | None:
+        return self._client.refresh_token if self._client else None
 
     async def async_setup(self) -> None:
         conf = {**self.entry.data, **self.entry.options}
@@ -318,6 +341,7 @@ class HaAiPushRuntime:
         integration_version = str(integration.version)
 
         client = PushClient(self.hass, endpoint, api_key, refresh_token, client_id, timeout_seconds)
+        self._client = client
         queue = DebouncedQueue(debounce_seconds)
         self._queue = queue
 
