@@ -37,7 +37,7 @@ async def test_five_sensors_per_thermostat_reflect_the_profile(hass, aioclient_m
     assert float(_sensor_state(hass, entry.entry_id, "confidence").state) == pytest.approx(82.3)
     assert float(_sensor_state(hass, entry.entry_id, "saving_est_7d").state) == pytest.approx(9.4)
     query = calls_to(aioclient_mock, GRAPHQL_URL)[0]
-    assert query["variables"] == {"homeId": "Home"}
+    assert "deviceProfiles" in query["query"] and "variables" not in query     # H-06: scoped by token, not name
 
 
 async def test_ml_blend_overrides_setpoint_and_model(hass, aioclient_mock):
@@ -51,7 +51,7 @@ async def test_ml_blend_overrides_setpoint_and_model(hass, aioclient_mock):
 
 
 async def test_sensors_go_unavailable_when_the_poll_fails(hass, aioclient_mock):
-    mock_backend(aioclient_mock, graphql=responder({"json": {"data": {"currentProfiles": [PROFILE]}}},
+    mock_backend(aioclient_mock, graphql=responder({"json": {"data": {"deviceProfiles": [PROFILE]}}},
                                                    {"status": 502}))
     entry = make_entry(hass)
     await setup_entry(hass, entry)
@@ -66,7 +66,7 @@ async def test_sensors_go_unavailable_when_the_poll_fails(hass, aioclient_mock):
 async def test_expired_access_token_on_poll_is_refreshed_not_reauthed(hass, aioclient_mock):
     """H-05 (was xfail): the poll renews the access token through the shared refresh."""
     mock_backend(aioclient_mock, graphql=responder({"status": 401},
-                                                   {"json": {"data": {"currentProfiles": [PROFILE]}}}))
+                                                   {"json": {"data": {"deviceProfiles": [PROFILE]}}}))
     entry = make_entry(hass)
     await setup_entry(hass, entry)
 

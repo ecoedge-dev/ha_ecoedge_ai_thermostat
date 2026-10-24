@@ -18,10 +18,42 @@ CONF_REFRESH_TOKEN = "refresh_token"
 # bookkeeping, never shown in a form.
 CONF_SYNC_HASH = "sync_entities_hash"
 
-AUTH_LOGIN_URL = "https://ha.ecoedge.io/api/auth/login"
-AUTH_REFRESH_URL = "https://ha.ecoedge.io/api/auth/refresh"
-GRAPHQL_URL = "https://ha.ecoedge.io/graphql/"
-SYNC_ENTITIES_URL = "https://ha.ecoedge.io/api/device/sync-entities"
+# v0.7.0 (audit H-07): every API call derives from one base. The backend sends
+# it at login and on every token refresh; entries without it use the default.
+# Pushes keep going to `endpoint` (the receiver, from the login's ha_endpoint).
+CONF_API_BASE = "api_base"
+# The oldest integration version the backend supports (audit M-08)
+CONF_MIN_VERSION = "min_supported_version"
+DEFAULT_API_BASE = "https://ha.ecoedge.io"
+PATH_LOGIN = "/api/auth/login"
+PATH_REFRESH = "/api/auth/refresh"
+PATH_DEVICE_UPDATE = "/api/auth/token"
+PATH_GRAPHQL = "/graphql/"
+PATH_SYNC_ENTITIES = "/api/device/sync-entities"
+
+
+def api_url(api_base: str | None, path: str) -> str:
+    return f"{(api_base or DEFAULT_API_BASE).rstrip('/')}{path}"
+
+
+# v0.7.0 (audit M-01): the only state attributes sent to EcoEdge — what the
+# thermal model reads, nothing vendor-specific or identifying.
+ATTRIBUTE_ALLOWLIST = frozenset({
+    "current_temperature",
+    "temperature",
+    "target_temp_low",
+    "target_temp_high",
+    "hvac_action",
+    "hvac_modes",
+    "min_temp",
+    "max_temp",
+    "target_temp_step",
+    "unit_of_measurement",
+    "device_class",
+    "friendly_name",
+})
+
+RELEASES_URL = "https://github.com/ecoedge-dev/ha_ecoedge_ai_thermostat/releases"
 
 # Internal defaults — not exposed in the UI
 # v0.6.0: the debounce is a batching window over state SNAPSHOTS (no reading
