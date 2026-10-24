@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Any
 
@@ -27,6 +28,7 @@ from .const import (
     DOMAIN,
     GRAPHQL_URL,
 )
+from .delivery import RefreshOutcome
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +60,7 @@ class EcoEdgeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         session: aiohttp.ClientSession,
         api_key: str,
         home_id: str,
+        renew: Callable[[str | None], Awaitable[RefreshOutcome]] | None = None,
     ) -> None:
         super().__init__(
             hass,
@@ -69,6 +72,9 @@ class EcoEdgeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._session = session
         self._api_key = api_key
         self._home_id = home_id
+        # v0.6.1 (audit H-05): the runtime's shared token refresh — a 401 on the
+        # poll renews the access token instead of going straight to reauth
+        self._renew = renew
         self._delayed_task: asyncio.Task | None = None
 
     def update_token(self, new_token: str) -> None:
@@ -95,7 +101,7 @@ class EcoEdgeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._delayed_task.cancel()
         await super().async_shutdown()
 
-    async def _async_update_data(self) -> dict[str, Any]:
+    async def _post_query(self) -> tuple[int, dict[str, Any] | None]:
         try:
             async with self._session.post(
                 GRAPHQL_URL,
@@ -106,13 +112,24 @@ class EcoEdgeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 },
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
-                if resp.status == 401:
-                    raise ConfigEntryAuthFailed("EcoEdge rejected the access token")
                 if resp.status >= 400:
-                    raise UpdateFailed(f"EcoEdge returned HTTP {resp.status}")
-                payload = await resp.json()
+                    return resp.status, None
+                return resp.status, await resp.json()
         except (TimeoutError, aiohttp.ClientError) as err:
             raise UpdateFailed(f"EcoEdge unreachable: {err}") from err
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        status, payload = await self._post_query()
+        if status == 401 and self._renew is not None:
+            outcome = await self._renew(self._api_key)
+            if outcome is RefreshOutcome.UNAVAILABLE:
+                raise UpdateFailed("EcoEdge token refresh unavailable — will retry")
+            if outcome is RefreshOutcome.NEW_TOKEN:   # update_token() already applied
+                status, payload = await self._post_query()
+        if status == 401:
+            raise ConfigEntryAuthFailed("EcoEdge rejected the access token")
+        if status >= 400 or payload is None:
+            raise UpdateFailed(f"EcoEdge returned HTTP {status}")
 
         errors = payload.get("errors")
         if errors:

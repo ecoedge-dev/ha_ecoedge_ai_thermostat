@@ -149,6 +149,13 @@ async def setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     await hass.async_block_till_done(wait_background_tasks=True)
 
 
+async def setup_entry_nowait(hass: HomeAssistant, entry: MockConfigEntry, settle: float = 0.3) -> None:
+    """Set up without waiting for background tasks — for a backend that keeps
+    failing, where the outbox sender (correctly) never finishes."""
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await asyncio.sleep(settle)
+
+
 async def wait_for_flush(hass: HomeAssistant, seconds: float = 1.4) -> None:
     """Let the (real-time) debounce fire and the push finish."""
     await asyncio.sleep(seconds)

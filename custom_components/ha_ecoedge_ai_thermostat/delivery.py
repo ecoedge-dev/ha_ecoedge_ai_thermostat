@@ -39,6 +39,14 @@ _LOGGER = logging.getLogger(__name__)
 STORAGE_VERSION = 1
 
 
+class RefreshOutcome(Enum):
+    """v0.6.1 (audit H-04): only a REJECTED refresh needs the user (reauth)."""
+
+    NEW_TOKEN = "new_token"
+    REJECTED = "rejected"          # the refresh token itself is invalid or expired
+    UNAVAILABLE = "unavailable"    # EcoEdge unreachable / 5xx / timeout — try again later
+
+
 class SendStatus(Enum):
     DELIVERED = "delivered"        # stored (or already stored: duplicate)
     REJECTED = "rejected"          # permanent 4xx: drop the batch

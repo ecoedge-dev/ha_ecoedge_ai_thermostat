@@ -10,6 +10,7 @@ from .conftest import (
     DOMAIN,
     GRAPHQL_URL,
     PROFILE,
+    REFRESH_URL,
     calls_to,
     make_entry,
     mock_backend,
@@ -62,8 +63,8 @@ async def test_sensors_go_unavailable_when_the_poll_fails(hass, aioclient_mock):
     assert _sensor_state(hass, entry.entry_id, "ai_setpoint").state == STATE_UNAVAILABLE
 
 
-@pytest.mark.xfail(reason="audit H-05: a GraphQL 401 goes straight to reauth; the refresh token is never tried")
 async def test_expired_access_token_on_poll_is_refreshed_not_reauthed(hass, aioclient_mock):
+    """H-05 (was xfail): the poll renews the access token through the shared refresh."""
     mock_backend(aioclient_mock, graphql=responder({"status": 401},
                                                    {"json": {"data": {"currentProfiles": [PROFILE]}}}))
     entry = make_entry(hass)
@@ -71,3 +72,22 @@ async def test_expired_access_token_on_poll_is_refreshed_not_reauthed(hass, aioc
 
     assert reauth_flows(hass) == []
     assert _sensor_state(hass, entry.entry_id, "ai_setpoint").state == "20.5"
+    assert entry.data["api_key"] == "access-2"                   # persisted for the next start
+    assert len(calls_to(aioclient_mock, REFRESH_URL)) == 1
+
+
+async def test_rejected_refresh_on_poll_starts_reauth(hass, aioclient_mock):
+    mock_backend(aioclient_mock, graphql=responder({"status": 401}), refresh=responder({"status": 401}))
+    entry = make_entry(hass)
+    await setup_entry(hass, entry)
+
+    assert len(reauth_flows(hass)) == 1
+
+
+async def test_unavailable_refresh_on_poll_does_not_start_reauth(hass, aioclient_mock):
+    mock_backend(aioclient_mock, graphql=responder({"status": 401}), refresh=responder({"status": 502}))
+    entry = make_entry(hass)
+    await setup_entry(hass, entry)
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    assert reauth_flows(hass) == [] and coordinator.last_update_success is False

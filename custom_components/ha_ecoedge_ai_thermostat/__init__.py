@@ -43,7 +43,14 @@ from .const import (
     SYNC_ENTITIES_URL,
 )
 from .coordinator import EcoEdgeCoordinator
-from .delivery import STORAGE_VERSION, BatchWindow, Outbox, SendResult, SendStatus
+from .delivery import (
+    STORAGE_VERSION,
+    BatchWindow,
+    Outbox,
+    RefreshOutcome,
+    SendResult,
+    SendStatus,
+)
 from .util import sync_fingerprint
 
 _LOGGER = logging.getLogger(__name__)
@@ -144,37 +151,40 @@ class PushClient:
         except (TimeoutError, aiohttp.ClientError) as err:
             return None, None, f"{type(err).__name__}: {err}"
 
-    async def async_refresh(self, failed_token: str | None = None) -> str | None:
-        """Exchange refresh_token for a new access token. Returns new token or None.
+    async def async_refresh(self, failed_token: str | None = None) -> RefreshOutcome:
+        """Exchange refresh_token for a new access token (now in `self.api_key`).
 
-        Serialized: if another flush already rotated the token while we waited
-        for the lock, reuse it instead of rotating again (audit H4).
+        Serialized: if another caller (push or poll) already rotated the token
+        while we waited for the lock, reuse it instead of rotating again (audit H4).
         """
         if not self.refresh_token:
-            return None
+            return RefreshOutcome.REJECTED
         async with self._refresh_lock:
             if failed_token is not None and self.api_key and self.api_key != failed_token:
-                return self.api_key
+                return RefreshOutcome.NEW_TOKEN
             return await self._do_refresh()
 
-    async def _do_refresh(self) -> str | None:
+    async def _do_refresh(self) -> RefreshOutcome:
         try:
             async with self.session.post(
                 AUTH_REFRESH_URL,
                 json={"refresh_token": self.refresh_token, "client_id": self.client_id or ""},
                 timeout=aiohttp.ClientTimeout(total=DEFAULT_REFRESH_TIMEOUT_SECONDS),
             ) as resp:
+                if resp.status in (400, 401, 403):
+                    _LOGGER.warning("Token refresh rejected (HTTP %s)", resp.status)
+                    return RefreshOutcome.REJECTED
                 if resp.status != 200:
-                    _LOGGER.warning("Token refresh returned HTTP %s", resp.status)
-                    return None
-                data = await resp.json()
-                new_token = data.get("token")
-                if new_token:
-                    self.api_key = new_token
-                return new_token
+                    _LOGGER.info("Token refresh unavailable (HTTP %s) — will retry", resp.status)
+                    return RefreshOutcome.UNAVAILABLE
+                new_token = (await resp.json()).get("token")
+                if not new_token:
+                    return RefreshOutcome.UNAVAILABLE
+                self.api_key = new_token
+                return RefreshOutcome.NEW_TOKEN
         except Exception as exc:
-            _LOGGER.warning("Token refresh request failed: %s", exc)
-            return None
+            _LOGGER.info("Token refresh request failed: %s — will retry", exc)
+            return RefreshOutcome.UNAVAILABLE
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -243,7 +253,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    await hass.config_entries.async_unload_platforms(entry, ["sensor"])
+    # audit M-05: keep the runtime when the sensor platform refuses to unload —
+    # tearing it down anyway left a half-unloaded entry (and doubled pushes on reload)
+    if not await hass.config_entries.async_unload_platforms(entry, ["sensor"]):
+        return False
     entry_data = hass.data[DOMAIN].pop(entry.entry_id, None)
     if entry_data:
         runtime: HaAiPushRuntime = entry_data["runtime"]
@@ -304,6 +317,28 @@ class HaAiPushRuntime:
     def current_refresh_token(self) -> str | None:
         return self._client.refresh_token if self._client else None
 
+    async def async_renew_token(self, failed_token: str | None) -> RefreshOutcome:
+        """Shared by the push path and the profile poll (audit H-05).
+
+        NEW_TOKEN is persisted to the entry (a bookkeeping update — no reload)
+        and handed to the coordinator; REJECTED starts the reauth flow.
+        """
+        client = self._client
+        if client is None:
+            return RefreshOutcome.UNAVAILABLE
+        outcome = await client.async_refresh(failed_token=failed_token)
+        if outcome is RefreshOutcome.NEW_TOKEN and client.api_key:
+            if self.entry.data.get(CONF_API_KEY) != client.api_key:
+                self.hass.config_entries.async_update_entry(
+                    self.entry, data={**self.entry.data, CONF_API_KEY: client.api_key}
+                )
+            if self.coordinator:
+                self.coordinator.update_token(client.api_key)
+        elif outcome is RefreshOutcome.REJECTED:
+            _LOGGER.warning("EcoEdge refresh token rejected for %s — starting re-auth flow", client.endpoint)
+            self.entry.async_start_reauth(self.hass)
+        return outcome
+
     async def async_setup(self) -> None:
         conf = {**self.entry.data, **self.entry.options}
         self.config_fingerprint = _config_fingerprint(self.entry)
@@ -332,6 +367,7 @@ class HaAiPushRuntime:
             session=aiohttp_client.async_get_clientsession(self.hass),
             api_key=api_key or "",
             home_id=home_id or self.hass.config.location_name,
+            renew=self.async_renew_token,
         )
         self.coordinator = coordinator
         # First fetch in the background — never block HA bootstrap on the cloud.
@@ -367,16 +403,15 @@ class HaAiPushRuntime:
             sent_with = client.api_key
             status, retry_after, detail = await client.post(payload)
             if status == 401:
-                new_token = await client.async_refresh(failed_token=sent_with)
-                if not new_token:
-                    _LOGGER.warning("Token expired and refresh failed for %s — starting re-auth flow",
-                                    client.endpoint)
+                outcome = await self.async_renew_token(sent_with)
+                if outcome is RefreshOutcome.UNAVAILABLE:
+                    # audit H-04: EcoEdge is down, the credentials are fine — keep
+                    # the batch and retry later, never ask the user for a password
+                    return SendResult(SendStatus.RETRY, detail="token refresh unavailable")
+                if outcome is RefreshOutcome.REJECTED:
                     # v0.4.0 (audit C3): HA's standard re-authenticate badge. The
                     # batch stays buffered and is resent after the reauth reload.
-                    self.entry.async_start_reauth(self.hass)
-                    return SendResult(SendStatus.AUTH_FAILED, detail="refresh failed")
-                self.hass.config_entries.async_update_entry(self.entry, data={**self.entry.data, CONF_API_KEY: new_token})
-                coordinator.update_token(new_token)
+                    return SendResult(SendStatus.AUTH_FAILED, detail="refresh rejected")
                 status, retry_after, detail = await client.post(payload)
                 if status == 401:
                     self.entry.async_start_reauth(self.hass)
