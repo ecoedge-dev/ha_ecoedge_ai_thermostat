@@ -4,6 +4,18 @@ All notable changes to the EcoEdge AI Thermostat integration. Audit IDs refer to
 `docs/ha_integration_audit_2026-08.md` / `docs/ha_integration_audit_2026-10.md`
 in the EcoEdge backend repository.
 
+## 0.6.1 — unreleased
+
+**No needless password prompts.**
+
+- **Token refresh failures are classified (H-04).**
+  - A rejected refresh token (HTTP 400/401/403) starts re-authentication, as before.
+  - When EcoEdge is unreachable (5xx, timeout, network), the readings stay in the outbox and the refresh is retried with backoff. No password prompt.
+- **The profile poll renews an expired access token (H-05).** It uses the same refresh as the uploads, instead of asking for re-authentication straight away. The new token is saved in the entry. If the refresh is only unavailable, the sensors report unavailable without a prompt.
+- **Passwords are sent exactly as typed (M-04).** Leading and trailing spaces were stripped before, which locked out such passwords.
+- **A refused platform unload no longer tears down the runtime half-way (M-05).**
+- **Tests:** H-04 and H-05 are normal tests now, so no expected failures remain. 33 tests pass, and each has a 60 s timeout.
+
 ## 0.6.0 — unreleased
 
 **Reliable delivery.** This needs the EcoEdge backend with idempotent ingest, ecoedge-dev/ha_ai_push#87.

@@ -18,6 +18,7 @@ from .conftest import (
     reauth_flows,
     responder,
     setup_entry,
+    setup_entry_nowait,
     wait_for_flush,
 )
 
@@ -96,15 +97,17 @@ async def test_rejected_refresh_token_starts_reauth(hass, aioclient_mock):
     await hass.config_entries.async_unload(entry.entry_id)
 
 
-@pytest.mark.xfail(reason="audit H-04: any refresh failure (5xx, timeout) starts reauth; only 400/401 should")
-async def test_transient_refresh_failure_does_not_start_reauth(hass, aioclient_mock):
+async def test_transient_refresh_failure_keeps_the_batch_and_does_not_start_reauth(hass, aioclient_mock):
+    """H-04 (was xfail): EcoEdge down while the token expires → retry later, no password prompt."""
     _states(hass)
     mock_backend(aioclient_mock, push=responder({"status": 401}), refresh=responder({"status": 503}))
     entry = make_entry(hass)
-    await setup_entry(hass, entry)
+    await setup_entry_nowait(hass, entry)
 
     assert reauth_flows(hass) == []
-    await hass.config_entries.async_unload(entry.entry_id)
+    assert len(calls_to(aioclient_mock, REFRESH_URL)) >= 2            # it keeps trying, with backoff
+    runtime = hass.data[DOMAIN][entry.entry_id]["runtime"]
+    assert runtime.outbox.pending_items == 2                          # nothing dropped
 
 
 async def test_migration_uses_client_id_as_unique_id(hass, aioclient_mock):
@@ -126,3 +129,17 @@ async def test_migration_v5_moves_the_old_debounce_default_to_the_batching_windo
 
     assert entry.version == 5 and entry.data["debounce_seconds"] == new         # a chosen value is kept
     await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_failed_platform_unload_keeps_the_runtime(hass, aioclient_mock):
+    """M-05: a refused platform unload must not tear the runtime down half-way."""
+    from unittest.mock import patch
+
+    _states(hass)
+    mock_backend(aioclient_mock)
+    entry = make_entry(hass)
+    await setup_entry(hass, entry)
+    with patch.object(hass.config_entries, "async_unload_platforms", return_value=False):
+        assert await hass.config_entries.async_unload(entry.entry_id) is False
+    assert entry.entry_id in hass.data[DOMAIN]
+    await hass.data[DOMAIN][entry.entry_id]["runtime"].async_unload()       # clean up for the test only

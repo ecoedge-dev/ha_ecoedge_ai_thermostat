@@ -74,9 +74,8 @@ def _normalize_user_input(user_input: dict[str, Any]) -> dict[str, Any]:
         else:
             data.pop(key)
 
-    password = data.get(CONF_PASSWORD)
-    if password is not None and isinstance(password, str):
-        data[CONF_PASSWORD] = password.strip()
+    # audit M-04: passwords are sent exactly as typed — the backend never
+    # strips them, so stripping here locked out passwords with edge spaces
 
     data[CONF_ROTATE_TOKEN] = bool(data.get(CONF_ROTATE_TOKEN, False))
 
@@ -357,7 +356,7 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 existing = {**self._reconfigure_entry.data, **self._reconfigure_entry.options}
                 if existing.get(CONF_CLIENT_ID):
                     parsed[CONF_CLIENT_ID] = existing[CONF_CLIENT_ID]
-            if not password:
+            if not password.strip():
                 errors["password"] = "password_required"
             else:
                 try:
@@ -426,8 +425,8 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         merged = {**entry.data, **entry.options}
 
         if user_input is not None:
-            password = (user_input.get(CONF_PASSWORD) or "").strip()
-            if not password:
+            password = user_input.get(CONF_PASSWORD) or ""
+            if not password.strip():
                 errors["password"] = "password_required"
             else:
                 try:

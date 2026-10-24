@@ -105,3 +105,13 @@ async def test_reauth_flow_stores_new_tokens(hass, aioclient_mock):
 
     assert result["type"] is FlowResultType.ABORT and result["reason"] == "reauth_successful"
     assert entry.data["api_key"] == "access-new" and entry.data["refresh_token"] == "refresh-new"
+
+
+async def test_password_is_sent_exactly_as_typed(hass, aioclient_mock):
+    """M-04: no stripping — the backend doesn't strip, so edge spaces must survive."""
+    aioclient_mock.post(LOGIN_URL, json=LOGIN_OK)
+    result = await _start_user_flow(hass)
+    with patch(f"custom_components.{DOMAIN}.async_setup_entry", return_value=True):
+        await hass.config_entries.flow.async_configure(result["flow_id"], {**USER_INPUT, "password": "  spaced pass "})
+        await hass.async_block_till_done()
+    assert calls_to(aioclient_mock, LOGIN_URL)[0]["password"] == "  spaced pass "
