@@ -323,9 +323,9 @@ async def _async_login(flow, data: dict[str, Any], password: str) -> dict[str, A
 
 
 class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    # v4 (audit H6): unique_id is the backend client_id, not home_id —
-    # migration lives in __init__.async_migrate_entry
-    VERSION = 4
+    # v4 (audit H6): unique_id is the backend client_id, not home_id; v5 (v0.6.0):
+    # 20 s batching window — migrations live in __init__.async_migrate_entry
+    VERSION = 5
 
     def __init__(self) -> None:
         self._reconfigure_entry: ConfigEntry | None = None

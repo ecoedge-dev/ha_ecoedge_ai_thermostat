@@ -39,7 +39,7 @@ async def test_startup_snapshot_pushes_only_selected_entities(hass, aioclient_mo
     body = calls_to(aioclient_mock, PUSH_URL)[0]
     assert {i["entity_id"] for i in body["items"]} == {"climate.living", "sensor.outdoor"}
     assert body["home_id"] == "Home" and body["event"] == "state_change_batch"
-    assert body["count"] == 2 and body["integration_version"]
+    assert body["count"] == 2 and body["integration_version"] and body["batch_id"]
     await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -107,11 +107,22 @@ async def test_transient_refresh_failure_does_not_start_reauth(hass, aioclient_m
     await hass.config_entries.async_unload(entry.entry_id)
 
 
-async def test_migration_to_v4_uses_client_id_as_unique_id(hass, aioclient_mock):
+async def test_migration_uses_client_id_as_unique_id(hass, aioclient_mock):
     mock_backend(aioclient_mock)
     entry = MockConfigEntry(domain=DOMAIN, data=entry_data(), version=3, unique_id="Home", title="Home")
     entry.add_to_hass(hass)
     await setup_entry(hass, entry)
 
-    assert entry.version == 4 and entry.unique_id == CLIENT_ID
+    assert entry.version == 5 and entry.unique_id == CLIENT_ID
+
+
+@pytest.mark.parametrize("old, new", [(3, 20), (10, 10)])
+async def test_migration_v5_moves_the_old_debounce_default_to_the_batching_window(hass, aioclient_mock, old, new):
+    mock_backend(aioclient_mock)
+    entry = MockConfigEntry(domain=DOMAIN, data=entry_data(debounce_seconds=old), version=4,
+                            unique_id=CLIENT_ID, title="Home")
+    entry.add_to_hass(hass)
+    await setup_entry(hass, entry)
+
+    assert entry.version == 5 and entry.data["debounce_seconds"] == new         # a chosen value is kept
     await hass.config_entries.async_unload(entry.entry_id)

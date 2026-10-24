@@ -62,8 +62,9 @@ async def unload_entries(hass: HomeAssistant):
 
 @pytest.fixture(autouse=True)
 def fast_timers(monkeypatch):
-    """Shrink the push retry backoff and the post-push fetch delay."""
-    monkeypatch.setattr(f"custom_components.{DOMAIN}.DEFAULT_RETRY_BACKOFF", 0.01)
+    """Shrink the outbox retry backoff and the post-push fetch delay."""
+    monkeypatch.setattr(f"custom_components.{DOMAIN}.OUTBOX_BACKOFF_BASE", 0.01)
+    monkeypatch.setattr(f"custom_components.{DOMAIN}.OUTBOX_BACKOFF_MAX", 0.05)
     monkeypatch.setattr(f"custom_components.{DOMAIN}.coordinator.DEFAULT_FETCH_DELAY_SECONDS", 0.01)
 
 
@@ -87,7 +88,7 @@ def entry_data(**overrides: Any) -> dict[str, Any]:
 
 def make_entry(hass: HomeAssistant, **overrides: Any) -> MockConfigEntry:
     entry = MockConfigEntry(
-        domain=DOMAIN, data=entry_data(**overrides), version=4, unique_id=CLIENT_ID, title="Home"
+        domain=DOMAIN, data=entry_data(**overrides), version=5, unique_id=CLIENT_ID, title="Home"
     )
     entry.add_to_hass(hass)
     return entry

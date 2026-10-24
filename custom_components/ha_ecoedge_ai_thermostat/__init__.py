@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import json
 import logging
 from collections.abc import Callable
@@ -11,8 +10,9 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_STATE_CHANGED
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant, State, callback
 from homeassistant.helpers import aiohttp_client
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 
@@ -33,23 +33,23 @@ from .const import (
     DEFAULT_DEBOUNCE_MAX_WAIT_SECONDS,
     DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_REFRESH_TIMEOUT_SECONDS,
-    DEFAULT_RETRY_ATTEMPTS,
-    DEFAULT_RETRY_BACKOFF,
     DEFAULT_TIMEOUT_SECONDS,
     DOMAIN,
+    LEGACY_DEBOUNCE_SECONDS,
+    OUTBOX_BACKOFF_BASE,
+    OUTBOX_BACKOFF_MAX,
+    OUTBOX_MAX_AGE_SECONDS,
+    OUTBOX_MAX_ITEMS,
     SYNC_ENTITIES_URL,
 )
 from .coordinator import EcoEdgeCoordinator
+from .delivery import STORAGE_VERSION, BatchWindow, Outbox, SendResult, SendStatus
 from .util import sync_fingerprint
 
 _LOGGER = logging.getLogger(__name__)
 
 # Home Assistant validates configuration.yaml via this
 CONFIG_SCHEMA = vol.Schema({DOMAIN: DOMAIN_SCHEMA}, extra=vol.ALLOW_EXTRA)
-
-
-class TokenExpiredError(Exception):
-    """Raised when the receiver returns HTTP 401."""
 
 
 def _utc_iso() -> str:
@@ -80,17 +80,35 @@ def _filter_entities(
     return _is_climate_entity(entity_id)
 
 
-def _state_to_payload(hass: HomeAssistant, entity_id: str) -> dict[str, Any] | None:
-    st = hass.states.get(entity_id)
-    if st is None:
-        return None
+def _snapshot(st: State) -> dict[str, Any]:
+    """One reading as it was at event time (v0.6.0: snapshots, not entity ids)."""
     return {
-        "entity_id": entity_id,
+        "entity_id": st.entity_id,
         "state": st.state,
         "attributes": dict(st.attributes),
         "last_changed": st.last_changed.isoformat() if st.last_changed else None,
         "last_updated": st.last_updated.isoformat() if st.last_updated else None,
     }
+
+
+def _retry_after(value: str | None) -> float | None:
+    try:
+        return max(0.0, float(value)) if value is not None else None
+    except ValueError:
+        return None                       # HTTP-date form: fall back to own backoff
+
+
+def _classify(status: int | None, retry_after: float | None, detail: str) -> SendResult:
+    """Audit M-03: only transient failures are retried; permanent 4xx drop the batch."""
+    if status is not None and 200 <= status < 300:
+        return SendResult(SendStatus.DELIVERED, detail=detail)
+    if status is None or status in (408, 425, 429) or status >= 500:
+        return SendResult(SendStatus.RETRY, retry_after=retry_after, detail=detail)
+    return SendResult(SendStatus.REJECTED, detail=detail)
+
+
+def _outbox_key(entry_id: str) -> str:
+    return f"{DOMAIN}.outbox.{entry_id}"
 
 
 class PushClient:
@@ -112,19 +130,19 @@ class PushClient:
         # v0.4.0 (audit H4): concurrent flushes hitting 401 must not both rotate
         self._refresh_lock = asyncio.Lock()
 
-    async def post(self, payload: dict[str, Any]) -> None:
+    async def post(self, payload: dict[str, Any]) -> tuple[int | None, float | None, str]:
+        """POST one batch. Returns (status or None on a network error, Retry-After, detail)."""
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-
-        url = f"{self.endpoint}/api/ha"
-
-        async with self.session.post(url, json=payload, headers=headers, timeout=self.timeout) as resp:
-            txt = await resp.text()
-            if resp.status == 401:
-                raise TokenExpiredError()
-            if resp.status >= 300:
-                raise RuntimeError(f"HTTP {resp.status}: {txt[:300]}")
+        try:
+            async with self.session.post(
+                f"{self.endpoint}/api/ha", json=payload, headers=headers, timeout=self.timeout
+            ) as resp:
+                txt = await resp.text()
+                return resp.status, _retry_after(resp.headers.get("Retry-After")), f"HTTP {resp.status}: {txt[:200]}"
+        except (TimeoutError, aiohttp.ClientError) as err:
+            return None, None, f"{type(err).__name__}: {err}"
 
     async def async_refresh(self, failed_token: str | None = None) -> str | None:
         """Exchange refresh_token for a new access token. Returns new token or None.
@@ -182,8 +200,11 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     home_id was the old unique_id, so two homes both named "Home" could not
     coexist on one HA instance. client_id is backend-issued and unique per
     device. Entries that never logged in keep their old unique_id.
+
+    v5 (v0.6.0, audit H-03): the old 3 s debounce default becomes the 20 s
+    batching window; a value the user chose explicitly is kept.
     """
-    if entry.version > 4:
+    if entry.version > 5:
         return False  # downgrade from a future version — not supported
     if entry.version < 4:
         conf = {**entry.data, **entry.options}
@@ -193,6 +214,11 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             unique_id=str(client_id) if client_id else entry.unique_id,
             version=4,
         )
+    if entry.version < 5:
+        data = dict(entry.data)
+        if data.get(CONF_DEBOUNCE_SECONDS, LEGACY_DEBOUNCE_SECONDS) == LEGACY_DEBOUNCE_SECONDS:
+            data[CONF_DEBOUNCE_SECONDS] = DEFAULT_DEBOUNCE_SECONDS
+        hass.config_entries.async_update_entry(entry, data=data, version=5)
     return True
 
 
@@ -225,6 +251,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Integration deleted: drop its buffered readings too."""
+    await Store(hass, STORAGE_VERSION, _outbox_key(entry.entry_id)).async_remove()
+
+
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload only when the runtime doesn't already reflect the entry.
 
@@ -253,61 +284,13 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)
 
 
-class DebouncedQueue:
-    def __init__(
-        self,
-        debounce_seconds: int,
-        max_wait_seconds: int = DEFAULT_DEBOUNCE_MAX_WAIT_SECONDS,
-    ):
-        self.debounce_seconds = debounce_seconds
-        self.max_wait_seconds = max_wait_seconds
-        self._lock = asyncio.Lock()
-        self._pending: set[str] = set()
-        self._task: asyncio.Task | None = None
-        self._first_pending_at: float | None = None
-
-    async def add(self, entity_id: str, flush_cb):
-        async with self._lock:
-            now = asyncio.get_running_loop().time()
-            self._pending.add(entity_id)
-            if self._first_pending_at is None:
-                self._first_pending_at = now
-            # v0.5.0 (audit H1): the trailing debounce resets on every event, so
-            # a sustained storm could postpone the flush forever — cap the total
-            # wait at max_wait_seconds from the FIRST pending event.
-            deadline_in = self._first_pending_at + self.max_wait_seconds - now
-            delay = min(float(self.debounce_seconds), max(0.0, deadline_in))
-            if self._task and not self._task.done():
-                self._task.cancel()
-            self._task = asyncio.create_task(self._flush_later(delay, flush_cb))
-
-    async def _flush_later(self, delay: float, flush_cb):
-        await asyncio.sleep(delay)
-        async with self._lock:
-            ids = sorted(self._pending)
-            self._pending.clear()
-            self._first_pending_at = None
-        await flush_cb(ids)
-
-    async def async_cancel(self) -> None:
-        async with self._lock:
-            task = self._task
-            self._task = None
-            self._pending.clear()
-            self._first_pending_at = None
-        if task and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-
-
 class HaAiPushRuntime:
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
         self._unsub: Callable[[], None] | None = None
-        self._queue: DebouncedQueue | None = None
-        self._initial_task: asyncio.Task | None = None
+        self._window: BatchWindow | None = None
+        self.outbox: Outbox | None = None
         self._client: PushClient | None = None
         self.coordinator: EcoEdgeCoordinator | None = None
         self.config_fingerprint: str = ""
@@ -342,8 +325,6 @@ class HaAiPushRuntime:
 
         client = PushClient(self.hass, endpoint, api_key, refresh_token, client_id, timeout_seconds)
         self._client = client
-        queue = DebouncedQueue(debounce_seconds)
-        self._queue = queue
 
         coordinator = EcoEdgeCoordinator(
             hass=self.hass,
@@ -364,18 +345,10 @@ class HaAiPushRuntime:
             "ecoedge_entity_sync",
         )
 
-        async def flush(entity_ids: list[str]) -> None:
-            items = []
-            for eid in entity_ids:
-                p = _state_to_payload(self.hass, eid)
-                if p:
-                    items.append(p)
-
-            if not items:
-                return
-
-            payload = {
+        def payload_for(batch: dict[str, Any]) -> dict[str, Any]:
+            return {
                 "source": "homeassistant",
+                "batch_id": batch["batch_id"],      # stable across resends → idempotent ingest
                 "home_id": home_id or self.hass.config.location_name,
                 "location_name": self.hass.config.location_name,
                 "latitude": self.hass.config.latitude,
@@ -383,74 +356,71 @@ class HaAiPushRuntime:
                 "timezone": str(self.hass.config.time_zone),
                 "ts_utc": _utc_iso(),
                 "event": "state_change_batch",
-                "count": len(items),
-                "items": items,
-                # v0.5.0: fleet adoption tracking — the receiver ignores unknown
-                # fields today and can start recording this without a client release
+                "count": len(batch["items"]),
+                "items": batch["items"],
+                # v0.5.0: fleet adoption tracking
                 "integration_version": integration_version,
             }
 
-            for attempt in range(1, DEFAULT_RETRY_ATTEMPTS + 1):
-                try:
-                    await client.post(payload)
-                    _LOGGER.debug(
-                        "Pushed %s climate states to %s", len(items), client.endpoint
-                    )
-                    coordinator.schedule_refresh_after_push()
-                    return
-                except TokenExpiredError:
-                    _LOGGER.debug("Access token expired, attempting refresh")
-                    new_token = await client.async_refresh(failed_token=client.api_key)
-                    if new_token:
-                        new_data = {**self.entry.data, CONF_API_KEY: new_token}
-                        self.hass.config_entries.async_update_entry(self.entry, data=new_data)
-                        coordinator.update_token(new_token)
-                        try:
-                            await client.post(payload)
-                            _LOGGER.debug("Pushed %s states after token refresh", len(items))
-                            coordinator.schedule_refresh_after_push()
-                        except Exception as e2:
-                            _LOGGER.warning("Push failed after token refresh: %s", e2)
-                    else:
-                        _LOGGER.warning(
-                            "Token expired and refresh failed for %s — starting re-auth flow",
-                            client.endpoint,
-                        )
-                        # v0.4.0 (audit C3): surface HA's standard re-authenticate
-                        # badge instead of warning into the void. Idempotent.
-                        self.entry.async_start_reauth(self.hass)
-                    return
-                except Exception as e:
-                    if attempt == DEFAULT_RETRY_ATTEMPTS:
-                        _LOGGER.warning("Push failed after %s retries: %s", DEFAULT_RETRY_ATTEMPTS, e)
-                        return
-                    await asyncio.sleep(DEFAULT_RETRY_BACKOFF * attempt)
+        async def send(batch: dict[str, Any]) -> SendResult:
+            payload = payload_for(batch)
+            sent_with = client.api_key
+            status, retry_after, detail = await client.post(payload)
+            if status == 401:
+                new_token = await client.async_refresh(failed_token=sent_with)
+                if not new_token:
+                    _LOGGER.warning("Token expired and refresh failed for %s — starting re-auth flow",
+                                    client.endpoint)
+                    # v0.4.0 (audit C3): HA's standard re-authenticate badge. The
+                    # batch stays buffered and is resent after the reauth reload.
+                    self.entry.async_start_reauth(self.hass)
+                    return SendResult(SendStatus.AUTH_FAILED, detail="refresh failed")
+                self.hass.config_entries.async_update_entry(self.entry, data={**self.entry.data, CONF_API_KEY: new_token})
+                coordinator.update_token(new_token)
+                status, retry_after, detail = await client.post(payload)
+                if status == 401:
+                    self.entry.async_start_reauth(self.hass)
+                    return SendResult(SendStatus.AUTH_FAILED, detail="401 after refresh")
+            result = _classify(status, retry_after, detail)
+            if result.status is SendStatus.DELIVERED:
+                _LOGGER.debug("Pushed %s readings to %s", len(batch["items"]), client.endpoint)
+            return result
+
+        outbox = Outbox(
+            self.hass, _outbox_key(self.entry.entry_id), send,
+            max_items=OUTBOX_MAX_ITEMS, max_age_seconds=OUTBOX_MAX_AGE_SECONDS,
+            backoff_base=OUTBOX_BACKOFF_BASE, backoff_max=OUTBOX_BACKOFF_MAX,
+            on_delivered=coordinator.schedule_refresh_after_push,
+        )
+        await outbox.async_load()
+        self.outbox = outbox
+
+        async def to_outbox(items: list[dict[str, Any]]) -> None:
+            outbox.enqueue(items)
+
+        window = BatchWindow(debounce_seconds, DEFAULT_DEBOUNCE_MAX_WAIT_SECONDS, to_outbox)
+        self._window = window
 
         @callback
         def _handle_state_change(event: Event) -> None:
-            # ignore removals / invalid events
-            if event.data.get("new_state") is None:
+            new_state = event.data.get("new_state")
+            if new_state is None:               # removals
                 return
-
-            entity_id = event.data.get("entity_id")
-            if not entity_id:
+            if not _filter_entities(self.hass, new_state.entity_id, include, exclude, extra_sensors):
                 return
-            if not _filter_entities(self.hass, entity_id, include, exclude, extra_sensors):
-                return
-
-            self.hass.async_create_task(queue.add(entity_id, flush))
+            window.add(_snapshot(new_state))
 
         self._unsub = self.hass.bus.async_listen(EVENT_STATE_CHANGED, _handle_state_change)
 
-        async def push_initial_snapshot() -> None:
-            ids = [
-                s.entity_id
-                for s in self.hass.states.async_all()
-                if _filter_entities(self.hass, s.entity_id, include, exclude, extra_sensors)
-            ]
-            await flush(ids)
-
-        self._initial_task = self.hass.async_create_task(push_initial_snapshot())
+        # startup snapshot of every selected entity, as one batch
+        snapshot = [
+            _snapshot(st)
+            for st in self.hass.states.async_all()
+            if _filter_entities(self.hass, st.entity_id, include, exclude, extra_sensors)
+        ]
+        if snapshot:
+            outbox.enqueue(snapshot)
+        outbox.start()                          # also resends what was buffered before a restart
 
         _LOGGER.info(
             "HA AI Push loaded. Endpoint=%s, include=%s, exclude=%s",
@@ -497,14 +467,12 @@ class HaAiPushRuntime:
         if self._unsub:
             self._unsub()
             self._unsub = None
-        if self._queue:
-            await self._queue.async_cancel()
-            self._queue = None
-        if self._initial_task:
-            self._initial_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._initial_task
-            self._initial_task = None
+        if self._window:
+            await self._window.flush_now()       # pending snapshots go into the persisted outbox
+            self._window = None
+        if self.outbox:
+            await self.outbox.async_stop()       # saves; resent on the next start
+            self.outbox = None
         if self.coordinator:
             await self.coordinator.async_shutdown()
             self.coordinator = None
