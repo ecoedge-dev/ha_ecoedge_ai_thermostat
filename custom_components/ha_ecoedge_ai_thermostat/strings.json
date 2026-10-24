@@ -10,7 +10,11 @@
           "home_id": "Home ID (optional)",
           "include_entities": "Select Thermostats",
           "outdoor_sensor": "Outdoor temperature sensor",
-          "debounce_seconds": "Batching window (seconds)"
+          "debounce_seconds": "Batching window (seconds)",
+          "api_base": "EcoEdge API address (advanced)"
+        },
+        "data_description": {
+          "api_base": "Leave as is unless EcoEdge support gave you another address (staging or self-hosted)."
         }
       },
       "reauth_confirm": {
@@ -77,6 +81,16 @@
       "saving_est_7d": {
         "name": "Saving Est. 7d"
       }
+    }
+  },
+  "issues": {
+    "yaml_deprecated": {
+      "title": "EcoEdge YAML configuration is deprecated",
+      "description": "The `ha_ecoedge_ai_thermostat:` block in `configuration.yaml` stores your EcoEdge password in plain text. Set the integration up under **Settings → Devices & services** (an existing setup keeps working), then remove the block from `configuration.yaml` and restart Home Assistant. YAML support will be removed in a future release."
+    },
+    "outdated": {
+      "title": "EcoEdge AI Thermostat needs an update",
+      "description": "You are running version {version}, but EcoEdge now needs at least {min_version}. Update the integration in HACS and restart Home Assistant, otherwise uploads or sensors may stop working."
     }
   }
 }

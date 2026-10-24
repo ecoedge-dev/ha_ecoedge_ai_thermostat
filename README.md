@@ -116,28 +116,20 @@ After setup you can adjust settings via **Settings → Devices & Services → Ec
 
 ---
 
-## YAML configuration (advanced)
+## YAML configuration (deprecated)
 
-If you prefer YAML over the UI, add this to `configuration.yaml`:
-
-```yaml
-ha_ecoedge_ai_thermostat:
-  endpoint: https://ha.ecoedge.io
-  email: you@example.com
-  password: your_password
-  home_id: my_home          # optional, defaults to HA location name
-  include_entities:
-    - climate.living_room
-    - climate.bedroom
-  outdoor_sensor: sensor.outdoor_temperature   # required for thermal modeling
-  debounce_seconds: 20
-```
+YAML configuration is deprecated since v0.7.0 and will be removed in a future
+release: it stores your password in plain text. Set the integration up under
+**Settings → Devices & services** instead. If `configuration.yaml` still has an
+`ha_ecoedge_ai_thermostat:` block, Home Assistant shows a Repair issue. An
+existing UI setup is never re-imported from YAML, so you can simply delete the
+block and restart.
 
 ---
 
 ## Privacy
 
-EcoEdge receives thermostat state data, your home's location (latitude/longitude), and timezone. This data is used exclusively for thermal modeling and setpoint optimization. It is never sold or shared with third parties. See the full [Privacy Policy](https://ecoedge.io/privacy).
+EcoEdge receives the state of the selected thermostats and the outdoor sensor, limited to the attributes the thermal model uses (temperatures, set-points, HVAC action and modes, limits, units and the display name). Your home's location (latitude/longitude) and timezone are sent only when you sign in, so the weather forecast matches your home. This data is used exclusively for thermal modeling and setpoint optimization. It is never sold or shared with third parties. See the full [Privacy Policy](https://ecoedge.io/privacy).
 
 ---
 

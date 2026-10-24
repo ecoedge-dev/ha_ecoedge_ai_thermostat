@@ -4,7 +4,22 @@ All notable changes to the EcoEdge AI Thermostat integration. Audit IDs refer to
 `docs/ha_integration_audit_2026-08.md` / `docs/ha_integration_audit_2026-10.md`
 in the EcoEdge backend repository.
 
-## 0.6.1 — unreleased
+## 0.7.0 — 2026-10-24
+
+**Least privilege and less data.** This needs the EcoEdge backend from ecoedge-dev/ha_ai_push#89; older backends still work through the fallbacks below.
+
+- **Profiles are read for this installation only (H-06, M-10).** The sensors now use `deviceProfiles`, which EcoEdge scopes to this installation's own device token. Before, the query picked a home by its name, so one installation's token could read the account's other homes, and renaming a home emptied its sensors. A backend without the new query gets the old one.
+- **One API address (H-07).** Sign-in, token refresh, sensors, entity sync and device updates all use the API address that EcoEdge sends at sign-in and with every token refresh. Readings still go to the receiver.
+  - **Fixes the entity sync and device update.** Up to v0.6.1 both went to the receiver host and failed (HTTP 404), so your configured outdoor sensor was never registered with EcoEdge.
+  - **Advanced mode** has a field for another API address (staging or self-hosted).
+- **Less data leaves Home Assistant (M-01).**
+  - Only the attributes the thermal model uses are sent: temperatures, set-points, HVAC action and modes, limits, units and the display name. Vendor extras such as serial numbers, IP addresses or battery levels are no longer sent.
+  - Latitude, longitude, location name and timezone are no longer part of every upload. They go to EcoEdge only when you sign in.
+- **YAML is deprecated (M-02).** A `configuration.yaml` block raises a Repair issue, because it stores your password in plain text. It is no longer re-imported at every start when the integration is already set up in the UI; before, that meant a sign-in at every restart.
+- **Outdated-version Repair issue (M-08).** When EcoEdge reports a newer minimum version than the one installed, Home Assistant shows a Repair issue with a link to the releases.
+- **Tests:** 43 pass. New: attribute allowlist and no location in batches, the `deviceProfiles` fallback, API base routing with a separate receiver, the contract stored from login and refresh without a reload, the advanced API base, the YAML issue without re-import, and the outdated issue.
+
+## 0.6.1 — 2026-10-24
 
 **No needless password prompts.**
 
@@ -16,7 +31,7 @@ in the EcoEdge backend repository.
 - **A refused platform unload no longer tears down the runtime half-way (M-05).**
 - **Tests:** H-04 and H-05 are normal tests now, so no expected failures remain. 33 tests pass, and each has a 60 s timeout.
 
-## 0.6.0 — unreleased
+## 0.6.0 — 2026-10-24
 
 **Reliable delivery.** This needs the EcoEdge backend with idempotent ingest, ecoedge-dev/ha_ai_push#87.
 

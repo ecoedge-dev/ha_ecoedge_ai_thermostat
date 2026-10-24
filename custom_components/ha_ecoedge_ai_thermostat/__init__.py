@@ -18,7 +18,8 @@ from homeassistant.loader import async_get_integration
 
 from .config_schema import DOMAIN_SCHEMA
 from .const import (
-    AUTH_REFRESH_URL,
+    ATTRIBUTE_ALLOWLIST,
+    CONF_API_BASE,
     CONF_API_KEY,
     CONF_CLIENT_ID,
     CONF_DEBOUNCE_SECONDS,
@@ -26,6 +27,7 @@ from .const import (
     CONF_EXCLUDE,
     CONF_HOME_ID,
     CONF_INCLUDE,
+    CONF_MIN_VERSION,
     CONF_OUTDOOR_SENSOR,
     CONF_REFRESH_TOKEN,
     CONF_SYNC_HASH,
@@ -40,7 +42,9 @@ from .const import (
     OUTBOX_BACKOFF_MAX,
     OUTBOX_MAX_AGE_SECONDS,
     OUTBOX_MAX_ITEMS,
-    SYNC_ENTITIES_URL,
+    PATH_REFRESH,
+    PATH_SYNC_ENTITIES,
+    api_url,
 )
 from .coordinator import EcoEdgeCoordinator
 from .delivery import (
@@ -51,7 +55,8 @@ from .delivery import (
     SendResult,
     SendStatus,
 )
-from .util import sync_fingerprint
+from .issues import async_check_version, async_raise_yaml_deprecated
+from .util import contract_updates, sync_fingerprint
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -88,11 +93,15 @@ def _filter_entities(
 
 
 def _snapshot(st: State) -> dict[str, Any]:
-    """One reading as it was at event time (v0.6.0: snapshots, not entity ids)."""
+    """One reading as it was at event time (v0.6.0: snapshots, not entity ids).
+
+    v0.7.0 (audit M-01): allowlisted attributes only — vendor extras and
+    device identifiers never leave Home Assistant.
+    """
     return {
         "entity_id": st.entity_id,
         "state": st.state,
-        "attributes": dict(st.attributes),
+        "attributes": {k: v for k, v in st.attributes.items() if k in ATTRIBUTE_ALLOWLIST},
         "last_changed": st.last_changed.isoformat() if st.last_changed else None,
         "last_updated": st.last_updated.isoformat() if st.last_updated else None,
     }
@@ -127,8 +136,11 @@ class PushClient:
         refresh_token: str | None,
         client_id: str | None,
         timeout_seconds: int,
+        api_base: str | None = None,
     ):
         self.endpoint = endpoint.rstrip("/")
+        self.api_base = api_base           # login/refresh/GraphQL/sync (audit H-07)
+        self.contract: dict[str, str] = {}  # api_base / min_supported_version from the last refresh
         self.api_key = api_key
         self.refresh_token = refresh_token
         self.client_id = client_id
@@ -167,7 +179,7 @@ class PushClient:
     async def _do_refresh(self) -> RefreshOutcome:
         try:
             async with self.session.post(
-                AUTH_REFRESH_URL,
+                api_url(self.api_base, PATH_REFRESH),
                 json={"refresh_token": self.refresh_token, "client_id": self.client_id or ""},
                 timeout=aiohttp.ClientTimeout(total=DEFAULT_REFRESH_TIMEOUT_SECONDS),
             ) as resp:
@@ -177,10 +189,12 @@ class PushClient:
                 if resp.status != 200:
                     _LOGGER.info("Token refresh unavailable (HTTP %s) — will retry", resp.status)
                     return RefreshOutcome.UNAVAILABLE
-                new_token = (await resp.json()).get("token")
+                body = await resp.json()
+                new_token = body.get("token")
                 if not new_token:
                     return RefreshOutcome.UNAVAILABLE
                 self.api_key = new_token
+                self.contract = contract_updates(body)
                 return RefreshOutcome.NEW_TOKEN
         except Exception as exc:
             _LOGGER.info("Token refresh request failed: %s — will retry", exc)
@@ -193,13 +207,23 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
     if DOMAIN in config:
-        hass.async_create_task(
-            hass.config_entries.flow.async_init(
-                DOMAIN,
-                context={"source": config_entries.SOURCE_IMPORT},
-                data=config[DOMAIN],
+        # v0.7.0 (audit M-02): YAML is deprecated — it holds a plain-text
+        # password, and importing at every start logged in at every start (a
+        # wrong password in a restart loop locks the account's sign-in).
+        async_raise_yaml_deprecated(hass)
+        if hass.config_entries.async_entries(DOMAIN):
+            _LOGGER.warning(
+                "EcoEdge is configured in the UI — the %s: block in configuration.yaml is ignored; "
+                "please remove it (it contains your password)", DOMAIN,
             )
-        )
+        else:
+            hass.async_create_task(
+                hass.config_entries.flow.async_init(
+                    DOMAIN,
+                    context={"source": config_entries.SOURCE_IMPORT},
+                    data=config[DOMAIN],
+                )
+            )
 
     return True
 
@@ -235,7 +259,9 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 def _config_fingerprint(entry: ConfigEntry) -> str:
     """User-visible config only — volatile bookkeeping must not force reloads."""
     conf = {**entry.data, **entry.options}
-    for volatile in (CONF_API_KEY, CONF_REFRESH_TOKEN, CONF_SYNC_HASH):
+    # api_base / min_supported_version arrive with token refreshes and are
+    # applied in place (v0.7.0)
+    for volatile in (CONF_API_KEY, CONF_REFRESH_TOKEN, CONF_SYNC_HASH, CONF_API_BASE, CONF_MIN_VERSION):
         conf.pop(volatile, None)
     return json.dumps(conf, sort_keys=True, default=str)
 
@@ -307,6 +333,7 @@ class HaAiPushRuntime:
         self._client: PushClient | None = None
         self.coordinator: EcoEdgeCoordinator | None = None
         self.config_fingerprint: str = ""
+        self.integration_version: str = ""
 
     @property
     def current_api_key(self) -> str | None:
@@ -328,10 +355,15 @@ class HaAiPushRuntime:
             return RefreshOutcome.UNAVAILABLE
         outcome = await client.async_refresh(failed_token=failed_token)
         if outcome is RefreshOutcome.NEW_TOKEN and client.api_key:
-            if self.entry.data.get(CONF_API_KEY) != client.api_key:
-                self.hass.config_entries.async_update_entry(
-                    self.entry, data={**self.entry.data, CONF_API_KEY: client.api_key}
-                )
+            # v0.7.0: the refresh also carries the client contract (H-07, M-08)
+            updates = {CONF_API_KEY: client.api_key, **client.contract}
+            if any(self.entry.data.get(k) != v for k, v in updates.items()):
+                self.hass.config_entries.async_update_entry(self.entry, data={**self.entry.data, **updates})
+            if CONF_API_BASE in client.contract:
+                client.api_base = client.contract[CONF_API_BASE]
+            if CONF_MIN_VERSION in client.contract:
+                async_check_version(self.hass, self.entry.entry_id, self.integration_version,
+                                    client.contract[CONF_MIN_VERSION])
             if self.coordinator:
                 self.coordinator.update_token(client.api_key)
         elif outcome is RefreshOutcome.REJECTED:
@@ -354,11 +386,18 @@ class HaAiPushRuntime:
         debounce_seconds = conf.get(CONF_DEBOUNCE_SECONDS, DEFAULT_DEBOUNCE_SECONDS)
         timeout_seconds = conf.get(CONF_TIMEOUT_SECONDS, DEFAULT_TIMEOUT_SECONDS)
         home_id = conf.get(CONF_HOME_ID)
+        api_base = conf.get(CONF_API_BASE)
+        if not home_id:
+            # audit M-10: the backend keys this home by its name in the pushes
+            _LOGGER.warning("EcoEdge entry has no home_id — sending HA's location name %r instead",
+                            self.hass.config.location_name)
 
         integration = await async_get_integration(self.hass, DOMAIN)
         integration_version = str(integration.version)
+        self.integration_version = integration_version
+        async_check_version(self.hass, self.entry.entry_id, integration_version, conf.get(CONF_MIN_VERSION))
 
-        client = PushClient(self.hass, endpoint, api_key, refresh_token, client_id, timeout_seconds)
+        client = PushClient(self.hass, endpoint, api_key, refresh_token, client_id, timeout_seconds, api_base)
         self._client = client
 
         coordinator = EcoEdgeCoordinator(
@@ -366,8 +405,9 @@ class HaAiPushRuntime:
             entry=self.entry,
             session=aiohttp_client.async_get_clientsession(self.hass),
             api_key=api_key or "",
-            home_id=home_id or self.hass.config.location_name,
+            home_id=home_id,
             renew=self.async_renew_token,
+            api_base=lambda: client.api_base,
         )
         self.coordinator = coordinator
         # First fetch in the background — never block HA bootstrap on the cloud.
@@ -377,7 +417,7 @@ class HaAiPushRuntime:
 
         # Sync entity lists to backend on startup (background, non-blocking).
         self.hass.async_create_background_task(
-            self._sync_entities_to_backend(endpoint, api_key, include, outdoor_sensor),
+            self._sync_entities_to_backend(api_key, include, outdoor_sensor),
             "ecoedge_entity_sync",
         )
 
@@ -386,10 +426,8 @@ class HaAiPushRuntime:
                 "source": "homeassistant",
                 "batch_id": batch["batch_id"],      # stable across resends → idempotent ingest
                 "home_id": home_id or self.hass.config.location_name,
-                "location_name": self.hass.config.location_name,
-                "latitude": self.hass.config.latitude,
-                "longitude": self.hass.config.longitude,
-                "timezone": str(self.hass.config.time_zone),
+                # v0.7.0 (audit M-01): no location in batches — it goes to
+                # EcoEdge only at sign-in and on a device update
                 "ts_utc": _utc_iso(),
                 "event": "state_change_batch",
                 "count": len(batch["items"]),
@@ -465,7 +503,7 @@ class HaAiPushRuntime:
         )
 
     async def _sync_entities_to_backend(
-        self, endpoint: str, api_key: str, thermostats: list, outdoor_sensor: str | None
+        self, api_key: str, thermostats: list, outdoor_sensor: str | None
     ) -> None:
         """Sync entity lists to backend. Non-fatal on failure."""
         if not api_key:
@@ -478,7 +516,9 @@ class HaAiPushRuntime:
         if self.entry.data.get(CONF_SYNC_HASH) == fingerprint:
             _LOGGER.debug("Entity lists unchanged — skipping startup sync")
             return
-        sync_url = f"{endpoint.rstrip('/')}/api/device/sync-entities" if endpoint else SYNC_ENTITIES_URL
+        # v0.7.0 (H-07): the API base, not the receiver — up to v0.6.x this went
+        # to the receiver host, which 404'd, so the outdoor sensor was never bound
+        sync_url = api_url(self._client.api_base if self._client else None, PATH_SYNC_ENTITIES)
         session = aiohttp_client.async_get_clientsession(self.hass)
         try:
             async with session.post(

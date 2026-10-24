@@ -7,6 +7,11 @@ a delay that gives the backend worker time to recompute.
 
 The 8 queried fields are the frozen client contract — additive-only on the
 backend; never rename or remove one here without a coordinated release.
+
+v0.7.0 (audit H-06, M-10): profiles are read with `deviceProfiles`, scoped to
+this installation's own device token, instead of `currentProfiles(homeId)`,
+which resolved the home by its mutable name. A backend without the new field
+(older or self-hosted) gets the old query.
 """
 from __future__ import annotations
 
@@ -26,15 +31,14 @@ from .const import (
     DEFAULT_FALLBACK_POLL_MINUTES,
     DEFAULT_FETCH_DELAY_SECONDS,
     DOMAIN,
-    GRAPHQL_URL,
+    PATH_GRAPHQL,
+    api_url,
 )
 from .delivery import RefreshOutcome
 
 _LOGGER = logging.getLogger(__name__)
 
-_GRAPHQL_QUERY = """
-query Profiles($homeId: String!) {
-  currentProfiles(homeId: $homeId) {
+_FIELDS = """
     entityId
     predictionModel
     decisionSafeSetpoint
@@ -43,9 +47,13 @@ query Profiles($homeId: String!) {
     savingsPct7d
     mlBlendActive
     mlBlendedSetpoint
-  }
-}
 """
+_DEVICE_QUERY = "query DeviceProfiles {\n  deviceProfiles {" + _FIELDS + "  }\n}\n"
+_LEGACY_QUERY = "query Profiles($homeId: String!) {\n  currentProfiles(homeId: $homeId) {" + _FIELDS + "  }\n}\n"
+
+
+def _is_unknown_field(message: str) -> bool:
+    return "deviceProfiles" in message and "Cannot query field" in message
 
 
 class EcoEdgeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -59,14 +67,15 @@ class EcoEdgeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         entry: ConfigEntry,
         session: aiohttp.ClientSession,
         api_key: str,
-        home_id: str,
+        home_id: str | None,
         renew: Callable[[str | None], Awaitable[RefreshOutcome]] | None = None,
+        api_base: Callable[[], str | None] | None = None,
     ) -> None:
         super().__init__(
             hass,
             _LOGGER,
             config_entry=entry,
-            name=f"{DOMAIN} {home_id}",
+            name=f"{DOMAIN} {home_id or entry.title}",
             update_interval=timedelta(minutes=DEFAULT_FALLBACK_POLL_MINUTES),
         )
         self._session = session
@@ -75,6 +84,9 @@ class EcoEdgeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # v0.6.1 (audit H-05): the runtime's shared token refresh — a 401 on the
         # poll renews the access token instead of going straight to reauth
         self._renew = renew
+        # v0.7.0 (H-07): read on every poll — a token refresh may move the base
+        self._api_base = api_base or (lambda: None)
+        self._legacy = False            # backend without deviceProfiles
         self._delayed_task: asyncio.Task | None = None
 
     def update_token(self, new_token: str) -> None:
@@ -101,17 +113,28 @@ class EcoEdgeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._delayed_task.cancel()
         await super().async_shutdown()
 
+    def _request(self) -> dict[str, Any]:
+        if self._legacy:
+            return {"query": _LEGACY_QUERY, "variables": {"homeId": self._home_id or ""}}
+        return {"query": _DEVICE_QUERY}
+
     async def _post_query(self) -> tuple[int, dict[str, Any] | None]:
         try:
             async with self._session.post(
-                GRAPHQL_URL,
-                json={"query": _GRAPHQL_QUERY, "variables": {"homeId": self._home_id}},
+                api_url(self._api_base(), PATH_GRAPHQL),
+                json=self._request(),
                 headers={
                     "Authorization": f"Bearer {self._api_key}",
                     "Content-Type": "application/json",
                 },
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
+                if resp.status == 400:          # graphene: a query the schema rejects
+                    try:
+                        body = await resp.json(content_type=None)
+                    except ValueError:
+                        return resp.status, None
+                    return (200, body) if isinstance(body, dict) and body.get("errors") else (resp.status, None)
                 if resp.status >= 400:
                     return resp.status, None
                 return resp.status, await resp.json()
@@ -132,6 +155,13 @@ class EcoEdgeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(f"EcoEdge returned HTTP {status}")
 
         errors = payload.get("errors")
+        if errors and not self._legacy and _is_unknown_field(str(errors[0].get("message", ""))):
+            _LOGGER.info("EcoEdge backend has no deviceProfiles yet — using currentProfiles")
+            if not self._home_id:
+                # audit M-10: the old query needs a home name; without one it is empty
+                _LOGGER.warning("EcoEdge entry has no home_id — the legacy profile query will be empty")
+            self._legacy = True
+            return await self._async_update_data()
         if errors:
             message = str(errors[0].get("message", "unknown GraphQL error"))
             # graphene reports auth problems as errors on a 200 response
@@ -139,5 +169,6 @@ class EcoEdgeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise ConfigEntryAuthFailed(message)
             raise UpdateFailed(f"EcoEdge GraphQL error: {message}")
 
-        profiles = (payload.get("data") or {}).get("currentProfiles") or []
+        data = payload.get("data") or {}
+        profiles = data.get("currentProfiles" if self._legacy else "deviceProfiles") or []
         return {p["entityId"]: p for p in profiles if p.get("entityId")}

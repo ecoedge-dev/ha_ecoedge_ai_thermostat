@@ -13,7 +13,7 @@ from homeassistant.helpers.selector import selector
 
 from .config_schema import DOMAIN_SCHEMA
 from .const import (
-    AUTH_LOGIN_URL,
+    CONF_API_BASE,
     CONF_API_KEY,
     CONF_CLIENT_ID,
     CONF_DEBOUNCE_SECONDS,
@@ -28,12 +28,16 @@ from .const import (
     CONF_ROTATE_TOKEN,
     CONF_SYNC_HASH,
     CONF_TIMEOUT_SECONDS,
+    DEFAULT_API_BASE,
     DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
     DOMAIN,
-    SYNC_ENTITIES_URL,
+    PATH_DEVICE_UPDATE,
+    PATH_LOGIN,
+    PATH_SYNC_ENTITIES,
+    api_url,
 )
-from .util import sync_fingerprint
+from .util import contract_updates, sync_fingerprint
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -79,6 +83,14 @@ def _normalize_user_input(user_input: dict[str, Any]) -> dict[str, Any]:
 
     data[CONF_ROTATE_TOKEN] = bool(data.get(CONF_ROTATE_TOKEN, False))
 
+    api_base = data.get(CONF_API_BASE)
+    if isinstance(api_base, str):
+        value = api_base.strip().rstrip("/")
+        if value and value != DEFAULT_API_BASE:
+            data[CONF_API_BASE] = value
+        else:
+            data.pop(CONF_API_BASE)
+
     outdoor = data.get(CONF_OUTDOOR_SENSOR)
     if outdoor is not None:
         value = str(outdoor).strip()
@@ -90,7 +102,12 @@ def _normalize_user_input(user_input: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
-def _build_config_schema(defaults: dict[str, Any]) -> vol.Schema:
+def _build_config_schema(defaults: dict[str, Any], advanced: bool = False) -> vol.Schema:
+    # v0.7.0 (H-07): the API base is an advanced option (staging, self-hosted)
+    extra = (
+        {vol.Optional(CONF_API_BASE, default=defaults.get(CONF_API_BASE) or DEFAULT_API_BASE): str}
+        if advanced else {}
+    )
     return vol.Schema(
         {
             vol.Required(CONF_EMAIL, default=defaults.get(CONF_EMAIL, "")): str,
@@ -113,6 +130,7 @@ def _build_config_schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_DEBOUNCE_SECONDS,
                 default=defaults.get(CONF_DEBOUNCE_SECONDS, DEFAULT_DEBOUNCE_SECONDS),
             ): vol.Coerce(int),
+            **extra,
         }
     )
 
@@ -187,6 +205,20 @@ def _base_from_ha_endpoint(ha_endpoint: str) -> str:
     return ha_endpoint
 
 
+def _apply_login_response(data: dict[str, Any], resp: dict[str, Any]) -> None:
+    """Store what a successful login returned (tokens, device, URLs, contract)."""
+    data[CONF_API_KEY] = resp["token"]
+    if resp.get("client_id"):
+        data[CONF_CLIENT_ID] = resp["client_id"]
+    if resp.get("refresh_token"):
+        data[CONF_REFRESH_TOKEN] = resp["refresh_token"]
+    data.update(contract_updates(resp))            # api_base, min_supported_version
+    ha_endpoint = resp.get("ha_endpoint") or api_url(data.get(CONF_API_BASE), "/api/ha")
+    data[CONF_ENDPOINT] = _base_from_ha_endpoint(ha_endpoint)
+    if not data.get(CONF_HOME_ID) and resp.get("home_id"):
+        data[CONF_HOME_ID] = resp["home_id"]
+
+
 def _ensure_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(v) for v in value if str(v)]
@@ -219,10 +251,10 @@ class InvalidAuth(HomeAssistantError):
 async def _async_update_device(flow, data: dict[str, Any]) -> None:
     """Push updated home_id/location_name to the backend without re-authenticating."""
     token = data.get(CONF_API_KEY)
-    endpoint = data.get(CONF_ENDPOINT, "").rstrip("/")
-    if not token or not endpoint:
+    if not token:
         return
-    url = f"{endpoint}/api/auth/token"
+    # v0.7.0 (H-07): the API base — up to v0.6.x this went to the receiver (404)
+    url = api_url(data.get(CONF_API_BASE), PATH_DEVICE_UPDATE)
     session = aiohttp_client.async_get_clientsession(flow.hass)
     try:
         async with session.post(
@@ -259,9 +291,8 @@ async def _async_sync_entities(flow, data: dict[str, Any]) -> None:
     if data.get(CONF_SYNC_HASH) == fingerprint:
         _LOGGER.debug("Entity lists unchanged — skipping sync")
         return
-    # Build URL from the configured endpoint so it works with any deployment
-    endpoint = (data.get(CONF_ENDPOINT) or "").rstrip("/")
-    sync_url = f"{endpoint}/api/device/sync-entities" if endpoint else SYNC_ENTITIES_URL
+    # v0.7.0 (H-07): the API base — up to v0.6.x this went to the receiver (404)
+    sync_url = api_url(data.get(CONF_API_BASE), PATH_SYNC_ENTITIES)
     session = aiohttp_client.async_get_clientsession(flow.hass)
     try:
         async with session.post(
@@ -280,7 +311,7 @@ async def _async_sync_entities(flow, data: dict[str, Any]) -> None:
 
 
 async def _async_login(flow, data: dict[str, Any], password: str) -> dict[str, Any]:
-    url = AUTH_LOGIN_URL
+    url = api_url(data.get(CONF_API_BASE), PATH_LOGIN)
     payload = {
         "email": data[CONF_EMAIL],
         "password": password,
@@ -368,18 +399,7 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 except AuthRequestError:
                     errors["base"] = "auth_request_failed"
                 else:
-                    parsed[CONF_API_KEY] = resp["token"]
-                    if resp.get("client_id"):
-                        parsed[CONF_CLIENT_ID] = resp["client_id"]
-                    if resp.get("refresh_token"):
-                        parsed[CONF_REFRESH_TOKEN] = resp["refresh_token"]
-                    ha_endpoint = resp.get("ha_endpoint")
-                    if not ha_endpoint:
-                        base = AUTH_LOGIN_URL.rsplit("/api/auth/login", 1)[0]
-                        ha_endpoint = f"{base}/api/ha"
-                    parsed[CONF_ENDPOINT] = _base_from_ha_endpoint(ha_endpoint)
-                    if not parsed.get(CONF_HOME_ID) and resp.get("home_id"):
-                        parsed[CONF_HOME_ID] = resp["home_id"]
+                    _apply_login_response(parsed, resp)
                     try:
                         data = _apply_domain_schema(parsed)
                     except vol.Invalid:
@@ -409,7 +429,9 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=_build_config_schema(defaults),
+            data_schema=_build_config_schema(
+                defaults, advanced=self.show_advanced_options and not self._reconfigure_entry
+            ),
             errors=errors,
         )
 
@@ -438,7 +460,7 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 except AuthRequestError:
                     errors["base"] = "auth_request_failed"
                 else:
-                    updates = {CONF_API_KEY: resp["token"]}
+                    updates = {CONF_API_KEY: resp["token"], **contract_updates(resp)}
                     if resp.get("client_id"):
                         updates[CONF_CLIENT_ID] = resp["client_id"]
                     if resp.get("refresh_token"):
@@ -479,18 +501,7 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except AuthRequestError:
             return self.async_abort(reason="auth_request_failed")
 
-        parsed[CONF_API_KEY] = resp["token"]
-        if resp.get("client_id"):
-            parsed[CONF_CLIENT_ID] = resp["client_id"]
-        if resp.get("refresh_token"):
-            parsed[CONF_REFRESH_TOKEN] = resp["refresh_token"]
-        ha_endpoint = resp.get("ha_endpoint")
-        if not ha_endpoint:
-            base = AUTH_LOGIN_URL.rsplit("/api/auth/login", 1)[0]
-            ha_endpoint = f"{base}/api/ha"
-        parsed[CONF_ENDPOINT] = _base_from_ha_endpoint(ha_endpoint)
-        if not parsed.get(CONF_HOME_ID) and resp.get("home_id"):
-            parsed[CONF_HOME_ID] = resp["home_id"]
+        _apply_login_response(parsed, resp)
 
         try:
             data = _apply_domain_schema(parsed)
@@ -532,19 +543,8 @@ class HaAiPushOptionsFlowHandler(config_entries.OptionsFlow):
             else:
                 try:
                     if password:
-                        resp = await _async_login(self, parsed, password)
-                        parsed[CONF_API_KEY] = resp["token"]
-                        if resp.get("client_id"):
-                            parsed[CONF_CLIENT_ID] = resp["client_id"]
-                        if resp.get("refresh_token"):
-                            parsed[CONF_REFRESH_TOKEN] = resp["refresh_token"]
-                        ha_endpoint = resp.get("ha_endpoint")
-                        if not ha_endpoint:
-                            base = AUTH_LOGIN_URL.rsplit("/api/auth/login", 1)[0]
-                            ha_endpoint = f"{base}/api/ha"
-                        parsed[CONF_ENDPOINT] = _base_from_ha_endpoint(ha_endpoint)
-                        if not parsed.get(CONF_HOME_ID) and resp.get("home_id"):
-                            parsed[CONF_HOME_ID] = resp["home_id"]
+                        resp = await _async_login(self, {**merged, **parsed}, password)
+                        _apply_login_response(parsed, resp)
                     else:
                         await _async_update_device(self, {**merged, **parsed})
                 except InvalidAuth:

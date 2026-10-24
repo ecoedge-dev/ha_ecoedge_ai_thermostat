@@ -128,7 +128,7 @@ def mock_backend(
     aioclient_mock.post(
         GRAPHQL_URL,
         side_effect=graphql
-        or responder({"json": {"data": {"currentProfiles": profiles if profiles is not None else [PROFILE]}}}),
+        or responder({"json": {"data": {"deviceProfiles": profiles if profiles is not None else [PROFILE]}}}),
     )
     aioclient_mock.post(SYNC_URL, json={"ok": True})
     aioclient_mock.post(TOKEN_URL, json={"ok": True})
