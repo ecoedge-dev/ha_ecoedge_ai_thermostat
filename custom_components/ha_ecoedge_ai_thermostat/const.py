@@ -24,14 +24,21 @@ GRAPHQL_URL = "https://ha.ecoedge.io/graphql/"
 SYNC_ENTITIES_URL = "https://ha.ecoedge.io/api/device/sync-entities"
 
 # Internal defaults — not exposed in the UI
-DEFAULT_DEBOUNCE_SECONDS = 3
+# v0.6.0: the debounce is a batching window over state SNAPSHOTS (no reading
+# is lost inside it), so it can be longer than the old 3 s: ~10-20x fewer
+# requests (audit H-03). Entries on the old default are migrated (entry v5).
+DEFAULT_DEBOUNCE_SECONDS = 20
+LEGACY_DEBOUNCE_SECONDS = 3
 # Hard flush bound (audit H1): a sustained event storm keeps resetting the
-# trailing debounce, so the batch must flush at latest this long after the
-# first pending event.
-DEFAULT_DEBOUNCE_MAX_WAIT_SECONDS = 30
+# trailing debounce, so a batch is cut at latest this long after its first
+# snapshot.
+DEFAULT_DEBOUNCE_MAX_WAIT_SECONDS = 60
 DEFAULT_TIMEOUT_SECONDS = 10
-DEFAULT_RETRY_ATTEMPTS = 3
-DEFAULT_RETRY_BACKOFF = 1.5
+# Outbox (audit H-02): readings buffered during outages, resent oldest first.
+OUTBOX_MAX_ITEMS = 5000
+OUTBOX_MAX_AGE_SECONDS = 24 * 3600
+OUTBOX_BACKOFF_BASE = 2.0
+OUTBOX_BACKOFF_MAX = 300.0
 DEFAULT_REFRESH_TIMEOUT_SECONDS = 15
 DEFAULT_FETCH_DELAY_SECONDS = 90
 DEFAULT_FALLBACK_POLL_MINUTES = 30

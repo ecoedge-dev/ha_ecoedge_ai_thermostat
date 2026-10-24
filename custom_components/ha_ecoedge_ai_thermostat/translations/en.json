@@ -10,7 +10,7 @@
           "home_id": "Home ID (optional)",
           "include_entities": "Select Thermostats",
           "outdoor_sensor": "Outdoor temperature sensor",
-          "debounce_seconds": "Debounce (seconds)"
+          "debounce_seconds": "Batching window (seconds)"
         }
       },
       "reauth_confirm": {
@@ -47,7 +47,7 @@
           "include_entities": "Select Thermostats",
           "exclude_entities": "Exclude entities",
           "outdoor_sensor": "Outdoor temperature sensor",
-          "debounce_seconds": "Debounce (seconds)",
+          "debounce_seconds": "Batching window (seconds)",
           "rotate_token": "Rotate access token"
         }
       }

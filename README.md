@@ -28,6 +28,7 @@
 - **Outdoor sensor support** — required for thermal modeling; use a local sensor for highest accuracy
 - **Secure** — all data is sent over encrypted HTTPS to the EcoEdge API (`ha.ecoedge.io`)
 - **Token refresh** — access tokens renew automatically, no re-authentication needed
+- **Reliable delivery:** readings taken while EcoEdge or your internet is unavailable are kept for up to 24 hours (5,000 readings) and sent when the connection returns, even across Home Assistant restarts.
 
 ---
 
@@ -110,7 +111,7 @@ After setup you can adjust settings via **Settings → Devices & Services → Ec
 | **Select Thermostats** | Add or remove thermostats from optimization |
 | **Exclude entities** | Entities to always ignore |
 | **Outdoor temperature sensor** | Required for thermal modeling — use a local sensor for highest accuracy |
-| **Debounce (seconds)** | How long to wait before batching state changes (default: 3s) |
+| **Batching window (seconds)** | State changes are collected for this long and sent together (default: 20 s). Every reading is kept, and a batch is sent at the latest 60 s after its first change. |
 | **Rotate access token** | Issue a new token — enter your password to confirm |
 
 ---
@@ -129,7 +130,7 @@ ha_ecoedge_ai_thermostat:
     - climate.living_room
     - climate.bedroom
   outdoor_sensor: sensor.outdoor_temperature   # required for thermal modeling
-  debounce_seconds: 3
+  debounce_seconds: 20
 ```
 
 ---
