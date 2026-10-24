@@ -1,0 +1,4 @@
+# Test dependencies (v0.5.2 harness). pytest-homeassistant-custom-component pins
+# Home Assistant itself: 0.13.371 = homeassistant==2026.10.0 (stable).
+pytest-homeassistant-custom-component==0.13.371
+ruff==0.16.2

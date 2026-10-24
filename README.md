@@ -75,8 +75,11 @@ The result will look like this:
         ├── config_flow.py
         ├── config_schema.py
         ├── const.py
+        ├── coordinator.py
         ├── manifest.json
+        ├── sensor.py
         ├── strings.json
+        ├── util.py
         └── translations/
             └── en.json
 ```
@@ -134,6 +137,20 @@ ha_ecoedge_ai_thermostat:
 ## Privacy
 
 EcoEdge receives thermostat state data, your home's location (latitude/longitude), and timezone. This data is used exclusively for thermal modeling and setpoint optimization. It is never sold or shared with third parties. See the full [Privacy Policy](https://ecoedge.io/privacy).
+
+---
+
+## Development
+
+Tests run in Docker, with pinned Python 3.14 and Home Assistant from `requirements_test.txt`. CI runs the same tests on every push and pull request.
+
+```bash
+make test                          # full suite
+make test ARGS="-k debounce -v"    # a subset, verbose
+make lint                          # ruff on custom_components/ and tests/
+```
+
+Known issues are tracked as `xfail` tests (`pytest.ini` sets `xfail_strict`). A fix that makes one of them pass must also remove its marker. See `CHANGELOG.md`.
 
 ---
 
