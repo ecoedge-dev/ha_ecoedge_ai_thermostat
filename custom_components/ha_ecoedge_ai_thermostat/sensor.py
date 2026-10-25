@@ -14,7 +14,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import EntityCategory, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -25,15 +25,18 @@ from .coordinator import EcoEdgeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+# sensors read the coordinator's data; no per-entity requests to EcoEdge
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator: EcoEdgeCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
-
-    registered: set[str] = set()
+    coordinator: EcoEdgeCoordinator = entry.runtime_data.coordinator
+    devices = entry.runtime_data.devices
+    registered = devices.registered     # shrinks when a device is removed (audit M-06)
 
     def _make_sensors(entity_id: str) -> list[SensorEntity]:
         return [
@@ -47,6 +50,9 @@ async def async_setup_entry(
     @callback
     def _register_new_thermostats() -> None:
         """Add sensor entities for any newly discovered thermostats."""
+        if not coordinator.last_update_success or coordinator.data is None:
+            return                          # a failed (or not yet finished) poll says nothing about absence
+        devices.update(set(coordinator.data or {}))
         new_entities = []
         for entity_id in coordinator.data or {}:
             if entity_id not in registered:
@@ -100,6 +106,12 @@ class _EcoEdgeSensor(CoordinatorEntity[EcoEdgeCoordinator], SensorEntity):
     def _profile(self) -> dict | None:
         return (self.coordinator.data or {}).get(self._thermostat_entity_id)
 
+    @property
+    def available(self) -> bool:
+        """v0.8.0 (audit M-06): unavailable while EcoEdge doesn't report this
+        thermostat, instead of showing its last values."""
+        return super().available and self._thermostat_entity_id in (self.coordinator.data or {})
+
 
 # ---------------------------------------------------------------------------
 # Concrete sensors
@@ -143,6 +155,7 @@ class ModelSensor(_EcoEdgeSensor):
     """
 
     _sensor_key = "model"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC      # v0.8.0 (audit L-04)
     _attr_icon = "mdi:brain"
 
     @property
@@ -169,6 +182,7 @@ class KPerHourSensor(_EcoEdgeSensor):
     """Heat loss coefficient k (°C/h) from the fitted thermal model."""
 
     _sensor_key = "k_per_hour"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC      # v0.8.0 (audit L-04)
     _attr_native_unit_of_measurement = "°C/h"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:home-thermometer-outline"
@@ -187,6 +201,7 @@ class ConfidenceSensor(_EcoEdgeSensor):
     """Model confidence score (0–100 %)."""
 
     _sensor_key = "confidence"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC      # v0.8.0 (audit L-04)
     _attr_native_unit_of_measurement = "%"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:chart-bell-curve-cumulative"

@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import aiohttp
@@ -26,6 +26,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DEFAULT_FALLBACK_POLL_MINUTES,
@@ -87,6 +88,7 @@ class EcoEdgeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # v0.7.0 (H-07): read on every poll — a token refresh may move the base
         self._api_base = api_base or (lambda: None)
         self._legacy = False            # backend without deviceProfiles
+        self.last_success_at: datetime | None = None     # v0.8.0: diagnostics / repairs
         self._delayed_task: asyncio.Task | None = None
 
     def update_token(self, new_token: str) -> None:
@@ -171,4 +173,9 @@ class EcoEdgeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         data = payload.get("data") or {}
         profiles = data.get("currentProfiles" if self._legacy else "deviceProfiles") or []
+        self.last_success_at = dt_util.utcnow()
         return {p["entityId"]: p for p in profiles if p.get("entityId")}
+
+    @property
+    def legacy_query(self) -> bool:
+        return self._legacy

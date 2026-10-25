@@ -116,6 +116,49 @@ After setup you can adjust settings via **Settings → Devices & Services → Ec
 
 ---
 
+## Troubleshooting
+
+**Diagnostics.** Go to **Settings → Devices & Services → EcoEdge AI Thermostat → ⋮ → Download diagnostics**. The file shows:
+- the upload queue (waiting readings, dropped readings, last result, last delivery);
+- the last profile update;
+- the API address and versions;
+- which thermostats are present or missing.
+
+Tokens, your e-mail and the device ID are removed from it. Attach it to a bug report.
+
+**System information.** Go to **Settings → System → Repairs → ⋮ → System information → EcoEdge AI Thermostat**. It shows whether the EcoEdge API is reachable, the integration version, the readings waiting to be sent, and the last delivery and profile update.
+
+**Repair issues** appear under **Settings → System → Repairs**. All except the YAML notice clear themselves once the cause is gone.
+
+| Issue | Meaning |
+|---|---|
+| EcoEdge has been unreachable | Nothing could be delivered or loaded for more than a day. Readings are kept for up to 24 hours (5,000 readings). Check the internet connection. |
+| EcoEdge readings will be dropped soon | The upload queue is close to its limit, or its oldest reading is nearly 24 hours old. |
+| Some EcoEdge readings were dropped | Readings were lost, because EcoEdge was unreachable for too long or rejected them. The counts are in the diagnostics. |
+| EcoEdge AI Thermostat needs an update | EcoEdge needs a newer version of the integration. Update it in HACS. |
+| EcoEdge YAML configuration is deprecated | Remove the `ha_ecoedge_ai_thermostat:` block from `configuration.yaml`. |
+
+**Thermostats that are gone.**
+- When EcoEdge stops reporting a thermostat, its sensors show *unavailable*. EcoEdge reports a thermostat while it has a reading from the last 7 days.
+- A device is removed automatically only when its thermostat has been **deleted or renamed in Home Assistant** and EcoEdge hasn't reported it for 7 days. A thermostat that still exists, for example one switched off all summer, is never removed; its sensors come back with its next reading.
+- A thermostat you deselect or exclude in the options is removed at the next start.
+- You can delete a device yourself on its device page while EcoEdge doesn't report its thermostat. An active thermostat can't be deleted, because it would come straight back.
+- Only successful updates count, so an EcoEdge outage never removes devices.
+
+**Diagnostic sensors.** *Model*, *k* and *confidence* are diagnostic entities. They are listed on the device page, but not on auto-generated dashboards.
+
+---
+
+## Removing the integration
+
+1. Go to **Settings → Devices & Services → EcoEdge AI Thermostat → ⋮ → Delete**. This also removes the devices, sensors and any readings still waiting to be sent from this Home Assistant.
+2. If you set it up through YAML, remove the `ha_ecoedge_ai_thermostat:` block from `configuration.yaml`.
+3. To remove the files as well, uninstall it in HACS (or delete `custom_components/ha_ecoedge_ai_thermostat`), then restart Home Assistant.
+
+This does not delete your data at EcoEdge. In the EcoEdge dashboard, delete the home under *Home settings → Delete this home*, or your whole account under *My profile → Delete account*.
+
+---
+
 ## YAML configuration (deprecated)
 
 YAML configuration is deprecated since v0.7.0 and will be removed in a future
@@ -143,7 +186,7 @@ make test ARGS="-k debounce -v"    # a subset, verbose
 make lint                          # ruff on custom_components/ and tests/
 ```
 
-Known issues are tracked as `xfail` tests (`pytest.ini` sets `xfail_strict`). A fix that makes one of them pass must also remove its marker. See `CHANGELOG.md`.
+Known issues can be recorded as `xfail` tests (`pytest.ini` sets `xfail_strict`). A fix that makes one pass must also remove its marker. None are open at the moment; see `CHANGELOG.md`. `custom_components/ha_ecoedge_ai_thermostat/quality_scale.yaml` tracks the Home Assistant quality-scale checklist.
 
 ---
 

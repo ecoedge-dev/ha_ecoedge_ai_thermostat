@@ -106,7 +106,7 @@ async def test_transient_refresh_failure_keeps_the_batch_and_does_not_start_reau
 
     assert reauth_flows(hass) == []
     assert len(calls_to(aioclient_mock, REFRESH_URL)) >= 2            # it keeps trying, with backoff
-    runtime = hass.data[DOMAIN][entry.entry_id]["runtime"]
+    runtime = entry.runtime_data
     assert runtime.outbox.pending_items == 2                          # nothing dropped
 
 
@@ -141,5 +141,5 @@ async def test_failed_platform_unload_keeps_the_runtime(hass, aioclient_mock):
     await setup_entry(hass, entry)
     with patch.object(hass.config_entries, "async_unload_platforms", return_value=False):
         assert await hass.config_entries.async_unload(entry.entry_id) is False
-    assert entry.entry_id in hass.data[DOMAIN]
-    await hass.data[DOMAIN][entry.entry_id]["runtime"].async_unload()       # clean up for the test only
+    assert entry.runtime_data.outbox is not None                          # runtime not torn down
+    await entry.runtime_data.async_unload()       # clean up for the test only

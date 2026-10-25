@@ -1,17 +1,20 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import aiohttp
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import Event, HomeAssistant, State, callback
 from homeassistant.helpers import aiohttp_client
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
@@ -55,13 +58,17 @@ from .delivery import (
     SendResult,
     SendStatus,
 )
-from .issues import async_check_version, async_raise_yaml_deprecated
+from .devices import DeviceTracker, devices_key, thermostat_of
+from .issues import HealthMonitor, async_check_version, async_raise_yaml_deprecated
 from .util import contract_updates, sync_fingerprint
 
 _LOGGER = logging.getLogger(__name__)
 
 # Home Assistant validates configuration.yaml via this
 CONFIG_SCHEMA = vol.Schema({DOMAIN: DOMAIN_SCHEMA}, extra=vol.ALLOW_EXTRA)
+
+# v0.8.0 (audit L-03): the runtime lives on the entry, not in hass.data
+type EcoEdgeConfigEntry = ConfigEntry[HaAiPushRuntime]
 
 
 def _utc_iso() -> str:
@@ -121,6 +128,9 @@ def _classify(status: int | None, retry_after: float | None, detail: str) -> Sen
     if status is None or status in (408, 425, 429) or status >= 500:
         return SendResult(SendStatus.RETRY, retry_after=retry_after, detail=detail)
     return SendResult(SendStatus.REJECTED, detail=detail)
+
+
+HEALTH_CHECK_INTERVAL = timedelta(minutes=5)
 
 
 def _outbox_key(entry_id: str) -> str:
@@ -202,10 +212,7 @@ class PushClient:
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Handle YAML import and init the domain storage."""
-
-    hass.data.setdefault(DOMAIN, {})
-
+    """Handle the (deprecated) YAML import."""
     if DOMAIN in config:
         # v0.7.0 (audit M-02): YAML is deprecated — it holds a plain-text
         # password, and importing at every start logged in at every start (a
@@ -266,36 +273,46 @@ def _config_fingerprint(entry: ConfigEntry) -> str:
     return json.dumps(conf, sort_keys=True, default=str)
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: EcoEdgeConfigEntry) -> bool:
     runtime = HaAiPushRuntime(hass, entry)
     await runtime.async_setup()
-    hass.data[DOMAIN][entry.entry_id] = {
-        "runtime": runtime,
-        "coordinator": runtime.coordinator,
-    }
+    entry.runtime_data = runtime
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: EcoEdgeConfigEntry) -> bool:
     # audit M-05: keep the runtime when the sensor platform refuses to unload —
     # tearing it down anyway left a half-unloaded entry (and doubled pushes on reload)
     if not await hass.config_entries.async_unload_platforms(entry, ["sensor"]):
         return False
-    entry_data = hass.data[DOMAIN].pop(entry.entry_id, None)
-    if entry_data:
-        runtime: HaAiPushRuntime = entry_data["runtime"]
-        await runtime.async_unload()
+    await entry.runtime_data.async_unload()
     return True
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Integration deleted: drop its buffered readings too."""
+    """Integration deleted: drop its buffered readings and device bookkeeping too."""
     await Store(hass, STORAGE_VERSION, _outbox_key(entry.entry_id)).async_remove()
+    await Store(hass, STORAGE_VERSION, devices_key(entry.entry_id)).async_remove()
 
 
-async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: EcoEdgeConfigEntry, device_entry: dr.DeviceEntry
+) -> bool:
+    """v0.8.0 (audit M-06): the user may delete a thermostat's device only while
+    EcoEdge doesn't report it — an active one would come straight back."""
+    thermostat = thermostat_of(entry.entry_id, device_entry)
+    runtime = getattr(entry, "runtime_data", None)
+    if thermostat is None or runtime is None or runtime.coordinator is None:
+        return True
+    if thermostat in (runtime.coordinator.data or {}):
+        return False
+    runtime.devices.forget(thermostat)
+    return True
+
+
+async def async_reload_entry(hass: HomeAssistant, entry: EcoEdgeConfigEntry) -> None:
     """Reload only when the runtime doesn't already reflect the entry.
 
     Token refreshes and sync-hash bookkeeping also update the entry; reloading
@@ -307,8 +324,9 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     reload, or the running coordinator keeps polling with the revoked token
     and drops the user into reauth.
     """
-    entry_data = hass.data[DOMAIN].get(entry.entry_id)
-    runtime: HaAiPushRuntime | None = entry_data["runtime"] if entry_data else None
+    runtime: HaAiPushRuntime | None = (
+        getattr(entry, "runtime_data", None) if entry.state is ConfigEntryState.LOADED else None
+    )
     if runtime is None:
         await hass.config_entries.async_reload(entry.entry_id)
         return
@@ -334,6 +352,10 @@ class HaAiPushRuntime:
         self.coordinator: EcoEdgeCoordinator | None = None
         self.config_fingerprint: str = ""
         self.integration_version: str = ""
+        self.devices = DeviceTracker(hass, entry.entry_id)
+        self.health: HealthMonitor | None = None
+        self._unsub_health: Callable[[], None] | None = None
+        self.started_at = time.time()
 
     @property
     def current_api_key(self) -> str | None:
@@ -391,6 +413,9 @@ class HaAiPushRuntime:
             # audit M-10: the backend keys this home by its name in the pushes
             _LOGGER.warning("EcoEdge entry has no home_id — sending HA's location name %r instead",
                             self.hass.config.location_name)
+
+        await self.devices.async_load()
+        self.devices.remove_deselected([str(t) for t in include], [str(t) for t in exclude])   # audit M-06
 
         integration = await async_get_integration(self.hass, DOMAIN)
         integration_version = str(integration.version)
@@ -468,6 +493,16 @@ class HaAiPushRuntime:
         await outbox.async_load()
         self.outbox = outbox
 
+        # v0.8.0 (audit M-07): repair issues for a stalled delivery or poll
+        health = HealthMonitor(self.hass, self.entry.entry_id, outbox, coordinator, self.started_at)
+        self.health = health
+
+        @callback
+        def _health_tick(_now: datetime) -> None:   # on the event loop: issue registry calls
+            health.check()
+
+        self._unsub_health = async_track_time_interval(self.hass, _health_tick, HEALTH_CHECK_INTERVAL)
+
         async def to_outbox(items: list[dict[str, Any]]) -> None:
             outbox.enqueue(items)
 
@@ -542,6 +577,11 @@ class HaAiPushRuntime:
         if self._unsub:
             self._unsub()
             self._unsub = None
+        if self._unsub_health:
+            self._unsub_health()
+            self._unsub_health = None
+        if self.health:
+            self.health.clear_all()
         if self._window:
             await self._window.flush_now()       # pending snapshots go into the persisted outbox
             self._window = None
@@ -551,5 +591,6 @@ class HaAiPushRuntime:
         if self.coordinator:
             await self.coordinator.async_shutdown()
             self.coordinator = None
+        await self.devices.async_save()
 
 

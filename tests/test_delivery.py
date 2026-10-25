@@ -148,7 +148,7 @@ async def test_permanent_rejection_is_not_retried(hass, aioclient_mock):
     entry = make_entry(hass)
     await setup_entry(hass, entry)
 
-    runtime = hass.data[DOMAIN][entry.entry_id]["runtime"]
+    runtime = entry.runtime_data
     assert len(calls_to(aioclient_mock, PUSH_URL)) == 1
     assert runtime.outbox.batches == [] and runtime.outbox.dropped_rejected == 1     # the one reading
 

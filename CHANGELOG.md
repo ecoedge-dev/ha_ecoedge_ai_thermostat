@@ -4,6 +4,35 @@ All notable changes to the EcoEdge AI Thermostat integration. Audit IDs refer to
 `docs/ha_integration_audit_2026-08.md` / `docs/ha_integration_audit_2026-10.md`
 in the EcoEdge backend repository.
 
+## 0.8.0 — 2026-10-25
+
+**The integration explains itself.** No backend change is needed, and homes on older versions are not affected.
+
+- **Thermostats that are gone are cleaned up (M-06).**
+  - When EcoEdge no longer reports a thermostat, its sensors show *unavailable* instead of their last values.
+  - When the thermostat has also been **deleted or renamed in Home Assistant** for **7 days**, its device and sensors are removed. A thermostat that still exists (for example switched off all summer) is never removed. The clock survives restarts, and only successful updates count, so an EcoEdge outage never removes anything.
+  - A thermostat deselected or excluded in the options is removed at the next start.
+  - A missing thermostat's device can be deleted by hand. An active one can't, because it would come straight back.
+  - A removed thermostat that comes back gets new sensors.
+- **Diagnostics download (M-07).** It shows:
+  - the upload queue: waiting and dropped readings, last result, last delivery;
+  - the last profile update;
+  - the API address and versions;
+  - present and missing thermostats;
+  - the raised Repair issues.
+
+  Tokens, your e-mail and the device ID are removed.
+- **New Repair issues (M-07).** Each clears itself once the cause is gone.
+  - **EcoEdge unreachable:** nothing delivered or loaded for more than 24 h.
+  - **Readings will be dropped soon:** the upload queue is at 80 % of its 5,000 readings, or its oldest reading is 20 h old (readings are dropped at 24 h).
+  - **Readings were dropped:** shown for a day after readings were lost.
+- **System information (M-07)** shows whether the EcoEdge API is reachable, the version, the readings waiting and the last delivery and profile update.
+- **Diagnostic sensors (L-04).** *Model*, *k* and *confidence* are now diagnostic entities, so they no longer appear on auto-generated dashboards. Cards that already use them keep working.
+- **Up to date with current Home Assistant (L-03).** The runtime lives on the config entry (`runtime_data`), and the flows return `ConfigFlowResult`. Nothing changes in behaviour or in the saved configuration, and downgrading to 0.7.0 is safe.
+- `PARALLEL_UPDATES = 0` on the sensor platform. A `quality_scale.yaml` self-assessment is added.
+- **README:** Troubleshooting and *Removing the integration* sections.
+- **Tests:** 61 pass. New: the device lifecycle (including "no absence before the first poll" and "a thermostat that still exists is never removed"), diagnostics redaction, each Repair issue raised and cleared, system information and entity categories.
+
 ## 0.7.0 — 2026-10-24
 
 **Least privilege and less data.** This needs the EcoEdge backend from ecoedge-dev/ha_ai_push#89; older backends still work through the fallbacks below.

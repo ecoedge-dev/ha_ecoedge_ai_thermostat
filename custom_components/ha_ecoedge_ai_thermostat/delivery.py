@@ -138,6 +138,9 @@ class Outbox:
         self.dropped_overflow = 0
         self.dropped_rejected = 0
         self.last_result: str | None = None
+        # v0.8.0: wall-clock time of the last accepted batch (persisted), for
+        # the "EcoEdge unreachable" repair issue and diagnostics
+        self.last_delivered_at: float | None = None
         self._failures = 0
         self._paused = False          # AUTH_FAILED: wait for a reload with new credentials
         self._sender: asyncio.Task | None = None
@@ -148,13 +151,14 @@ class Outbox:
         self.batches = [b for b in data.get("batches", []) if b.get("batch_id") and b.get("items")]
         self.dropped_overflow = int(data.get("dropped_overflow", 0))
         self.dropped_rejected = int(data.get("dropped_rejected", 0))
+        self.last_delivered_at = data.get("last_delivered_at")
         self._trim()
         if self.batches:
             _LOGGER.info("EcoEdge outbox: %d buffered batch(es) from before the restart", len(self.batches))
 
     def _data(self) -> dict[str, Any]:
         return {"batches": self.batches, "dropped_overflow": self.dropped_overflow,
-                "dropped_rejected": self.dropped_rejected}
+                "dropped_rejected": self.dropped_rejected, "last_delivered_at": self.last_delivered_at}
 
     def _schedule_save(self) -> None:
         self._store.async_delay_save(self._data, 2)
@@ -188,6 +192,16 @@ class Outbox:
     def pending_items(self) -> int:
         return sum(len(b["items"]) for b in self.batches)
 
+    @property
+    def oldest_age_seconds(self) -> float | None:
+        if not self.batches:
+            return None
+        return max(0.0, time.time() - self.batches[0].get("created_at", time.time()))
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
     # ── sending ───────────────────────────────────────────────────────────────
     def start(self) -> None:
         """Run the sender if there is work. It exits when the outbox is empty
@@ -219,6 +233,7 @@ class Outbox:
                                     result.detail, len(batch["items"]))
                 else:
                     self._failures = 0
+                    self.last_delivered_at = time.time()
                     if self._on_delivered:
                         self._on_delivered()
                 self._schedule_save()
