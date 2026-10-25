@@ -91,6 +91,29 @@
     "outdated": {
       "title": "EcoEdge AI Thermostat needs an update",
       "description": "You are running version {version}, but EcoEdge now needs at least {min_version}. Update the integration in HACS and restart Home Assistant, otherwise uploads or sensors may stop working."
+    },
+    "backend_unreachable": {
+      "title": "EcoEdge has been unreachable for {hours} hours",
+      "description": "Home Assistant could not deliver readings to EcoEdge or load the AI profiles for more than a day. Readings are kept for up to 24 hours (5,000 readings) and sent once EcoEdge is reachable again. Check the internet connection of this Home Assistant. This issue clears itself after the next successful upload."
+    },
+    "readings_at_risk": {
+      "title": "EcoEdge readings will be dropped soon",
+      "description": "{pending} of at most {max} readings are waiting for EcoEdge, and the oldest has waited {hours} hours. Readings older than 24 hours, or above the limit, are dropped. This issue clears itself once the backlog has been delivered."
+    },
+    "readings_dropped": {
+      "title": "Some EcoEdge readings were dropped",
+      "description": "Readings could not be delivered and were dropped: {overflow} because EcoEdge was unreachable for too long (24 hours or 5,000 readings), {rejected} because EcoEdge rejected them. The counts are totals since the integration was set up. This issue clears itself after a day without new drops; the details are in the diagnostics download."
+    }
+  },
+  "system_health": {
+    "info": {
+      "api_reachable": "EcoEdge API reachable",
+      "version": "Integration version",
+      "min_supported_version": "Minimum supported version",
+      "readings_waiting": "Readings waiting to be sent",
+      "last_delivery": "Last delivery",
+      "last_profile_poll": "Last profile update",
+      "configured": "Configured"
     }
   }
 }

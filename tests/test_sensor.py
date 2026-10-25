@@ -57,7 +57,7 @@ async def test_sensors_go_unavailable_when_the_poll_fails(hass, aioclient_mock):
     await setup_entry(hass, entry)
     assert _sensor_state(hass, entry.entry_id, "ai_setpoint").state == "20.5"
 
-    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    coordinator = entry.runtime_data.coordinator
     await coordinator.async_refresh()
     await hass.async_block_till_done()
     assert _sensor_state(hass, entry.entry_id, "ai_setpoint").state == STATE_UNAVAILABLE
@@ -89,5 +89,5 @@ async def test_unavailable_refresh_on_poll_does_not_start_reauth(hass, aioclient
     entry = make_entry(hass)
     await setup_entry(hass, entry)
 
-    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    coordinator = entry.runtime_data.coordinator
     assert reauth_flows(hass) == [] and coordinator.last_update_success is False

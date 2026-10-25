@@ -66,7 +66,7 @@ async def test_backend_without_device_profiles_falls_back_to_current_profiles(ha
     queries = calls_to(aioclient_mock, GRAPHQL_URL)
     assert "deviceProfiles" in queries[0]["query"]
     assert "currentProfiles" in queries[1]["query"] and queries[1]["variables"] == {"homeId": "Home"}
-    assert hass.data[DOMAIN][entry.entry_id]["coordinator"].data == {"climate.living": PROFILE}
+    assert entry.runtime_data.coordinator.data == {"climate.living": PROFILE}
 
 
 # ── H-07: one API base ────────────────────────────────────────────────────────
@@ -101,11 +101,11 @@ async def test_refresh_stores_the_contract_without_a_reload(hass, aioclient_mock
                                              "min_supported_version": "0.6.1"}}))
     entry = make_entry(hass)
     await setup_entry(hass, entry)
-    runtime = hass.data[DOMAIN][entry.entry_id]["runtime"]
+    runtime = entry.runtime_data
 
     assert entry.data["api_key"] == "access-2"
     assert entry.data["api_base"] == "https://ha.ecoedge.io" and entry.data["min_supported_version"] == "0.6.1"
-    assert hass.data[DOMAIN][entry.entry_id]["runtime"] is runtime          # bookkeeping only: no reload
+    assert entry.runtime_data is runtime          # bookkeeping only: no reload
     assert ir.async_get(hass).async_get_issue(DOMAIN, f"outdated_{entry.entry_id}") is None
 
 

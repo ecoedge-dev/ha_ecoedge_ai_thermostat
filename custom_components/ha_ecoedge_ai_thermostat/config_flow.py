@@ -4,9 +4,8 @@ from typing import Any
 import voluptuous as vol
 from aiohttp import ClientError, ClientTimeout
 from homeassistant import config_entries
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigFlowResult
 from homeassistant.core import callback
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.selector import selector
@@ -367,7 +366,7 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is None and self._reconfigure_entry:
             current = {**self._reconfigure_entry.data, **self._reconfigure_entry.options}
@@ -435,13 +434,13 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_reauth(self, entry_data) -> FlowResult:
+    async def async_step_reauth(self, entry_data) -> ConfigFlowResult:
         """Triggered by ConfigEntryAuthFailed / async_start_reauth (audit C3)."""
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         entry = self._get_reauth_entry()
         merged = {**entry.data, **entry.options}
@@ -478,7 +477,7 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         entry_id = self.context.get("entry_id")
         entry = self.hass.config_entries.async_get_entry(entry_id) if entry_id else None
         if not entry:
@@ -486,7 +485,7 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._reconfigure_entry = entry
         return await self.async_step_user(user_input)
 
-    async def async_step_import(self, user_input: dict[str, Any]) -> FlowResult:
+    async def async_step_import(self, user_input: dict[str, Any]) -> ConfigFlowResult:
         parsed = _normalize_user_input(user_input)
         password = parsed.pop(CONF_PASSWORD, "")
         if not password:
@@ -522,12 +521,12 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class HaAiPushOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         return await self.async_step_user(user_input)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         merged = {**self.config_entry.data, **self.config_entry.options}
         merged[CONF_INCLUDE] = _ensure_list(merged.get(CONF_INCLUDE))
