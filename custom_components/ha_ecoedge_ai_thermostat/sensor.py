@@ -179,11 +179,16 @@ class ModelSensor(_EcoEdgeSensor):
 
 
 class KPerHourSensor(_EcoEdgeSensor):
-    """Heat loss coefficient k (°C/h) from the fitted thermal model."""
+    """Heat-loss coefficient k from the RC fit: dT/dt = −k · (T_indoor − T_outdoor).
+
+    k is a rate per hour (1/h), the share of the indoor–outdoor difference the
+    room loses per hour with the heating off; typical rooms 0.005–0.06. v0.8.1
+    (issue #10): the unit was "°C/h", which read as degrees per hour.
+    """
 
     _sensor_key = "k_per_hour"
     _attr_entity_category = EntityCategory.DIAGNOSTIC      # v0.8.0 (audit L-04)
-    _attr_native_unit_of_measurement = "°C/h"
+    _attr_native_unit_of_measurement = "1/h"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:home-thermometer-outline"
     _attr_suggested_display_precision = 3
@@ -195,6 +200,16 @@ class KPerHourSensor(_EcoEdgeSensor):
             return None
         k = p.get("rcKPerHour")
         return round(float(k), 4) if k is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        k = (self._profile or {}).get("rcKPerHour")
+        k = float(k) if k is not None else None
+        return {
+            "loss_pct_per_hour": round(k * 100, 2) if k is not None else None,
+            "time_constant_h": round(1 / k, 1) if k else None,       # hours; 1/k
+            "fitted_by": "rc",          # k always comes from the RC fit; the Model sensor may show kq
+        }
 
 
 class ConfidenceSensor(_EcoEdgeSensor):

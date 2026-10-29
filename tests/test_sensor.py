@@ -33,7 +33,10 @@ async def test_five_sensors_per_thermostat_reflect_the_profile(hass, aioclient_m
 
     assert _sensor_state(hass, entry.entry_id, "ai_setpoint").state == "20.5"
     assert _sensor_state(hass, entry.entry_id, "model").state == "rc"
-    assert float(_sensor_state(hass, entry.entry_id, "k_per_hour").state) == pytest.approx(0.0123)
+    k = _sensor_state(hass, entry.entry_id, "k_per_hour")
+    assert float(k.state) == pytest.approx(0.0123) and k.attributes["unit_of_measurement"] == "1/h"   # #10
+    assert k.attributes["loss_pct_per_hour"] == 1.23 and k.attributes["time_constant_h"] == 81.0   # 1 / 0.01234
+    assert k.attributes["fitted_by"] == "rc"
     assert float(_sensor_state(hass, entry.entry_id, "confidence").state) == pytest.approx(82.3)
     assert float(_sensor_state(hass, entry.entry_id, "saving_est_7d").state) == pytest.approx(9.4)
     query = calls_to(aioclient_mock, GRAPHQL_URL)[0]

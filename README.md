@@ -24,6 +24,7 @@
 - **Thermal learning** — adapts to your home's insulation, size, and heating system
 - **Weather-aware** — uses real forecasts (temperature, wind, precipitation)
 - **Native HA sensors** — AI setpoint, model, heat loss, confidence and saving estimate per thermostat, usable in your own automations
+  - *Heat loss* is the coefficient k per hour (`1/h`): the share of the indoor–outdoor temperature difference a room loses per hour with the heating off. Typical rooms are 0.005–0.06; its attribute `time_constant_h` is 1/k in hours.
 - **Multi-thermostat** — select which thermostats to include
 - **Outdoor sensor support** — required for thermal modeling; use a local sensor for highest accuracy
 - **Secure** — all data is sent over encrypted HTTPS to the EcoEdge API (`ha.ecoedge.io`)

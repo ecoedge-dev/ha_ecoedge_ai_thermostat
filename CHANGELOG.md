@@ -4,6 +4,18 @@ All notable changes to the EcoEdge AI Thermostat integration. Audit IDs refer to
 `docs/ha_integration_audit_2026-08.md` / `docs/ha_integration_audit_2026-10.md`
 in the EcoEdge backend repository.
 
+## 0.8.1 — 2026-10-29
+
+**The heat-loss sensor is labelled correctly** ([#10](https://github.com/ecoedge-dev/ha_ecoedge_ai_thermostat/issues/10)). No backend change is needed.
+
+- **Unit `1/h` instead of `°C/h`.** k is a rate per hour: the share of the indoor–outdoor temperature difference a room loses per hour while the heating is off (`dT/dt = −k · (T_indoor − T_outdoor)`). k = 0.03 means 3 % per hour. The value itself is unchanged.
+- **New attributes on the *Heat Loss k/h* sensor:**
+  - `loss_pct_per_hour`: the same value as a percentage;
+  - `time_constant_h`: 1/k, in hours;
+  - `fitted_by: rc`: k always comes from the RC fit, while the *Model* sensor may show `kq`.
+- **Typical values** are about 0.005–0.06 per hour, with a median of 0.015, across the rooms EcoEdge models. The bands published before (0.3–0.6) were ten times too high and are corrected on dashboard.ecoedge.io.
+- **After updating:** Home Assistant may report under *Developer tools → Statistics* that the unit of this sensor changed. Choose to keep the existing statistics with the new unit; the values are the same.
+
 ## 0.8.0 — 2026-10-25
 
 **The integration explains itself.** No backend change is needed, and homes on older versions are not affected.
