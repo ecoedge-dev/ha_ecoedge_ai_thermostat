@@ -247,6 +247,13 @@ class InvalidAuth(HomeAssistantError):
     """Raised when credentials are invalid."""
 
 
+class EmailNotVerified(AuthRequestError):
+    """v0.8.2: the account exists and the password is right, but its e-mail
+    address isn't confirmed yet (backend 403 code=email_not_verified). A
+    subclass of AuthRequestError, so any path that doesn't name it still shows
+    the generic message."""
+
+
 async def _async_update_device(flow, data: dict[str, Any]) -> None:
     """Push updated home_id/location_name to the backend without re-authenticating."""
     token = data.get(CONF_API_KEY)
@@ -335,6 +342,10 @@ async def _async_login(flow, data: dict[str, Any], password: str) -> dict[str, A
         ) as resp:
             if resp.status == 401:
                 raise InvalidAuth
+            if resp.status == 403:
+                body = await resp.json(content_type=None)
+                if isinstance(body, dict) and body.get("code") == "email_not_verified":
+                    raise EmailNotVerified
             if resp.status >= 400:
                 text = await resp.text()
                 _LOGGER.debug("Auth request failed for %s: %s (%s)", url, resp.status, text)
@@ -395,6 +406,8 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "invalid_auth"
                 except CannotConnect:
                     errors["base"] = "cannot_connect"
+                except EmailNotVerified:
+                    errors["base"] = "email_not_verified"
                 except AuthRequestError:
                     errors["base"] = "auth_request_failed"
                 else:
@@ -456,6 +469,8 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "invalid_auth"
                 except CannotConnect:
                     errors["base"] = "cannot_connect"
+                except EmailNotVerified:
+                    errors["base"] = "email_not_verified"
                 except AuthRequestError:
                     errors["base"] = "auth_request_failed"
                 else:
@@ -497,6 +512,8 @@ class HaAiPushConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="invalid_auth")
         except CannotConnect:
             return self.async_abort(reason="cannot_connect")
+        except EmailNotVerified:
+            return self.async_abort(reason="email_not_verified")
         except AuthRequestError:
             return self.async_abort(reason="auth_request_failed")
 
@@ -550,6 +567,8 @@ class HaAiPushOptionsFlowHandler(config_entries.OptionsFlow):
                     errors["base"] = "invalid_auth"
                 except CannotConnect:
                     errors["base"] = "cannot_connect"
+                except EmailNotVerified:
+                    errors["base"] = "email_not_verified"
                 except AuthRequestError:
                     errors["base"] = "auth_request_failed"
                 else:

@@ -30,13 +30,15 @@
       "cannot_connect": "Cannot reach the EcoEdge service. Check your internet connection.",
       "invalid_auth": "Invalid email or password.",
       "auth_request_failed": "Authentication failed. Please try again or contact info@ecoedge.io.",
-      "password_required": "Password is required."
+      "password_required": "Password is required.",
+      "email_not_verified": "Confirm your e-mail address first: open the link EcoEdge sent you when you created your account, then try again. No e-mail? Use \"Resend confirmation link\" on dashboard.ecoedge.io/sign-in."
     },
     "abort": {
       "unknown_entry": "Configuration entry could not be found.",
       "reconfigure_successful": "Settings updated successfully. The integration is reloading to apply your changes.",
       "reauth_successful": "Re-authentication successful. The integration has reconnected.",
-      "already_configured": "This home is already configured."
+      "already_configured": "This home is already configured.",
+      "email_not_verified": "Confirm your e-mail address first: open the link EcoEdge sent you when you created your account, then try again. No e-mail? Use \"Resend confirmation link\" on dashboard.ecoedge.io/sign-in."
     }
   },
   "options": {
@@ -61,7 +63,8 @@
       "cannot_connect": "Cannot reach the EcoEdge service. Check your internet connection.",
       "invalid_auth": "Invalid email or password.",
       "auth_request_failed": "Authentication failed. Please try again or contact info@ecoedge.io.",
-      "password_required": "Password is required."
+      "password_required": "Password is required.",
+      "email_not_verified": "Confirm your e-mail address first: open the link EcoEdge sent you when you created your account, then try again. No e-mail? Use \"Resend confirmation link\" on dashboard.ecoedge.io/sign-in."
     }
   },
   "entity": {

@@ -65,6 +65,23 @@ async def test_user_flow_invalid_auth(hass, aioclient_mock):
     assert result["type"] is FlowResultType.FORM and result["errors"] == {"base": "invalid_auth"}
 
 
+async def test_user_flow_unconfirmed_email_gets_its_own_message(hass, aioclient_mock):
+    """v0.8.2: the backend answers 403 code=email_not_verified for a new account
+    whose address isn't confirmed yet (correct password)."""
+    aioclient_mock.post(LOGIN_URL, status=403,
+                        json={"error": "Confirm your e-mail address first.", "code": "email_not_verified"})
+    result = await _start_user_flow(hass)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
+    assert result["type"] is FlowResultType.FORM and result["errors"] == {"base": "email_not_verified"}
+
+
+async def test_user_flow_other_403_stays_generic(hass, aioclient_mock):
+    aioclient_mock.post(LOGIN_URL, status=403, json={"error": "Forbidden"})
+    result = await _start_user_flow(hass)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
+    assert result["type"] is FlowResultType.FORM and result["errors"] == {"base": "auth_request_failed"}
+
+
 async def test_user_flow_cannot_connect(hass, aioclient_mock):
     aioclient_mock.post(LOGIN_URL, exc=ClientError())
     result = await _start_user_flow(hass)
