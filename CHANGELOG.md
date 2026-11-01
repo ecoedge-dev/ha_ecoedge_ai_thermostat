@@ -4,6 +4,14 @@ All notable changes to the EcoEdge AI Thermostat integration. Audit IDs refer to
 `docs/ha_integration_audit_2026-08.md` / `docs/ha_integration_audit_2026-10.md`
 in the EcoEdge backend repository.
 
+## 0.8.2 — 2026-11-01
+
+**A clear message for a new account that hasn't confirmed its e-mail yet.** EcoEdge now asks new accounts to confirm their e-mail address before they can sign in. Existing accounts are not affected, and nothing changes for homes that are already connected.
+
+- **Setup, re-authentication and options** show *"Confirm your e-mail address first: open the link EcoEdge sent you when you created your account, then try again"* instead of the generic *"Authentication failed"*, when the backend reports an unconfirmed address (`403`, `code: email_not_verified`).
+- Any other refusal still shows the generic message.
+- Older versions keep working; with them, an unconfirmed new account sees the generic message.
+
 ## 0.8.1 — 2026-10-29
 
 **The heat-loss sensor is labelled correctly** ([#10](https://github.com/ecoedge-dev/ha_ecoedge_ai_thermostat/issues/10)). No backend change is needed.
